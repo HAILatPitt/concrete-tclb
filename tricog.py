@@ -25,10 +25,10 @@ def imports():
     import marimo as mo
     import geopandas as gp
     import pandas as pd
-    import shapely.wkt
+    from shapely import wkt
     import time
     import copy
-    return copy, gp, mo, pd, shapely, time
+    return copy, gp, mo, pd, time, wkt
 
 
 @app.cell(hide_code=True)
@@ -867,7 +867,7 @@ def _(
     mo,
     pd,
     set_parcels_file_input_complete,
-    shapely,
+    wkt,
 ):
     mo.stop(not get_continue_on_to_parcels_geojson())
 
@@ -880,7 +880,7 @@ def _(
             subtitle="Please be patient, this may take a minute. Even longer than the others!"
     ) as _spinner:
         parcels_df_df = pd.read_csv(PARCELS_CSV_PATH)
-        parcels_geometry = parcels_df_df['geometry'].map(shapely.wkt.loads)
+        parcels_geometry = parcels_df_df['geometry'].map(wkt.loads)
         parcels_df = gp.GeoDataFrame(parcels_df_df, geometry=parcels_geometry)
         set_parcels_file_input_complete(True)
 
@@ -1813,9 +1813,9 @@ def tricog_path_cell_2(
                     familiar, it's because it's the same number of municipalities within TriCOG's borders.<br><br>
                     Remember we said earlier than when you run the clip function, the output dataframe contains only matching data from \
                     the base layer. In this case, because you selected `tricog_df` as the base layer, the output only contains data that \
-                    was from `tricog_df`. We were hoping that our output file would contain data about the parcels within these \ 
+                    was from `tricog_df`. We were hoping that our output file would contain data about the parcels within these \
                     boundaries.<br><br>
-                    Scroll back up and select the other clip function option (with `parcels_df` as the base layer) and see if that \ 
+                    Scroll back up and select the other clip function option (with `parcels_df` as the base layer) and see if that \
                     makes a difference."""),
                 ]
             )
@@ -2012,7 +2012,7 @@ def _(
                     <br><br>
                     2. **The data is collected for different purposes**. <br>
                     `tricog_df` was created for in-house use at TriCOG to have a map of their boundaries. `assessments_df` was created \
-                    to maintain financial assessment data on every parcel across the county. It may make sense for the county to keep \ 
+                    to maintain financial assessment data on every parcel across the county. It may make sense for the county to keep \
                     track of wards to compare parcels and properties, but TriCOG may not have that need. """),
                     mo.md(f"""Despite these differences, can we still use text analysis to find matches between the TriCOG municipalities \
                     and the assessments municipalities?<br>"""),
