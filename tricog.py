@@ -32,6 +32,19 @@ def imports():
 
 
 @app.cell(hide_code=True)
+def _(gp):
+    import io as _io
+
+    def read_geo(path):
+        # In WASM, GDAL's /vsicurl/ can't fetch URLs, so download the file ourselves
+        if str(path).startswith(("http://", "https://")):
+            from pyodide.http import open_url
+            return gp.read_file(_io.BytesIO(open_url(str(path)).read().encode()))
+        return gp.read_file(path)
+    return (read_geo,)
+
+
+@app.cell(hide_code=True)
 def constant_text():
     # tricog_geo_path_cell_one_text = [
     #         f"""One method to find the parcels we're looking for is to use the GeoPandas clip function. Clip is a tool \
@@ -205,8 +218,8 @@ def expected_values():
 
 
 @app.cell(hide_code=True)
-def _(OAKLAND_PARCELS_PATH, gp):
-    oakland_parcels_df = gp.read_file(OAKLAND_PARCELS_PATH)
+def _(OAKLAND_PARCELS_PATH, read_geo):
+    oakland_parcels_df = read_geo(OAKLAND_PARCELS_PATH)
     return (oakland_parcels_df,)
 
 
@@ -701,9 +714,9 @@ def _(liens_df, mo):
 def _(
     TRICOG_PATH,
     get_tricog_counter,
-    gp,
     liens_df,
     mo,
+    read_geo,
     strip_string,
     tricog_file_expected_code,
     tricog_text_geojson_box,
@@ -731,7 +744,7 @@ def _(
                     title="Reading in 'tricog_df.geojson'",
                     subtitle="Please be patient, this may take a minute"
             ) as _spinner:
-                tricog_df = gp.read_file(TRICOG_PATH)
+                tricog_df = read_geo(TRICOG_PATH)
                 mo.output.replace_at_index("Correct!", 1)
         else:
             if get_tricog_counter() < 2:
@@ -1286,9 +1299,9 @@ def _(
     OVERLAY_LAYER,
     assessments_df,
     get_start_analysis_button,
-    gp,
     mo,
     oakland_parcel_exploration,
+    read_geo,
 ):
     # Analysis prep
 
@@ -1305,14 +1318,14 @@ def _(
                 title="Reading files necessary for the next section",
                 subtitle="Please be patient, this may take a minute"
         ) as _spinner:
-            clipped_parcels = gp.read_file(CLIPPED_PARCELS_PATH)
+            clipped_parcels = read_geo(CLIPPED_PARCELS_PATH)
             # clipped_parcels_df = pd.DataFrame(clipped_parcels.astype({'geometry':'str'}))
             clipped_parcels_df = clipped_parcels.iloc[0:, 0:-1]
-            clipped_parcels_tricog_base = gp.read_file(CLIPPED_PARCELS_TRICOG_BASE_PATH)
+            clipped_parcels_tricog_base = read_geo(CLIPPED_PARCELS_TRICOG_BASE_PATH)
             clipped_parcels_tricog_base_df = clipped_parcels_tricog_base.iloc[0:30, 0:24]
             # clipped_parcels_tricog_base_df = pd.DataFrame(clipped_parcels_tricog_base.astype({'geometry':'str'}))
             m = oakland_parcel_exploration
-            overlay = gp.read_file(OVERLAY_LAYER)
+            overlay = read_geo(OVERLAY_LAYER)
     return (
         clipped_parcels,
         clipped_parcels_df,
