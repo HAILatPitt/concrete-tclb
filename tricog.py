@@ -14,6 +14,7 @@ def _():
 async def _(micropip):
     await micropip.install("folium")
     await micropip.install("mapclassify")
+    await micropip.install("geopandas")
 
     # import geopandas as gp
     return
