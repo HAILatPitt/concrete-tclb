@@ -54,7 +54,6 @@ with app.setup:
         "RANKIN", "RESERVE", "SHARPSBURG", "SOUTH VERSAILLES", "SWISSVALE", "TURTLE CREEK", "WEST HOMESTEAD",
         "WHITE OAK", "WILKINS",
     )
-    COUNT_BUCKETS = ("under 500", "500 to 5,000", "5,000 to 50,000", "more than 50,000")
     # What each trap does to a list built at the reference settings, from answer_key.json (CONCRETE/docs/tclb_poee).
     TRAP_NUMBERS = {
         "names_missed": 2351,
@@ -195,7 +194,7 @@ with app.setup:
         },
     }
     STAGE_INTROS = {
-        1: "Before you open the data, decide what you expect. You'll lock four answers here and come back to them "
+        1: "Before you open the data, decide what you expect. You'll lock three answers here and come back to them "
            "at the end. Nobody grades them.",
         2: "You'll build the director's list in eight tasks. Each task shows you some of the data first and says in "
            "plain words what to do, and you write the code. What you save in one task is there for the next, and "
@@ -716,17 +715,6 @@ def task_output_parts(mo, result: dict | None) -> list:
 
 
 @app.function
-def count_bucket(count: int) -> str:
-    if count < 500:
-        return COUNT_BUCKETS[0]
-    if count < 5000:
-        return COUNT_BUCKETS[1]
-    if count <= 50000:
-        return COUNT_BUCKETS[2]
-    return COUNT_BUCKETS[3]
-
-
-@app.function
 def with_entry(mapping: dict, name: str, value) -> dict:
     return {**mapping, name: value}
 
@@ -745,7 +733,7 @@ def clicked_cells(clicks: dict, done: dict) -> list:
 @app.function
 def prediction_ready(fields: dict) -> bool:
     texts = ("boundary_why", "amount", "harmed")
-    return bool(fields.get("boundary")) and bool(fields.get("types")) and bool(fields.get("bucket")) and all(
+    return bool(fields.get("boundary")) and bool(fields.get("types")) and all(
         str(fields.get(key) or "").strip() for key in texts)
 
 
@@ -786,8 +774,7 @@ def locked_prediction_html(prediction: dict) -> str:
         f"{paragraph_html(prediction['boundary_why'])}</p>"
         f"<p><b>Counts as single-family:</b> {html.escape(types_text(prediction['types']))}</p>"
         f"<p><b>Lien amount that suggests abandonment:</b> {paragraph_html(prediction['amount'])}. "
-        f"<b>Who is harmed if that's wrong:</b> {paragraph_html(prediction['harmed'])}</p>"
-        f"<p><b>Parcels meeting all three rules:</b> {html.escape(prediction['bucket'])}</p></div>"
+        f"<b>Who is harmed if that's wrong:</b> {paragraph_html(prediction['harmed'])}</p></div>"
     )
 
 
@@ -1019,7 +1006,7 @@ def counts_table_html(rows: tuple) -> str:
 
 
 @app.function
-def comparison_html(diff: dict, row_count: int, guess: str, cutoff: float, note: str) -> str:
+def comparison_html(diff: dict, row_count: int, cutoff: float, note: str) -> str:
     """Part 1: the learner's list against the correct one, in distinct parcels."""
     only_yours = (diff["outside"] + diff["not_home"] + sum(diff["home_types"].values()) + diff["no_lien"]
                   + diff["below_cutoff"])
@@ -1042,11 +1029,10 @@ def comparison_html(diff: dict, row_count: int, guess: str, cutoff: float, note:
                  f"<p>Your list has {row_count:,} rows: {diff['duplicates']:,} "
                  f"{verb(diff['duplicates'], 'repeats', 'repeat')} a parcel and {no_id:,} {verb(no_id, 'has', 'have')} "
                  "no parcel ID.</p>")
-    guess_line = (f"In Predict you guessed {guess} homes. Your list has {plural(diff['listed'], 'parcel')}, in the "
-                  f"{count_bucket(diff['listed'])} range. Part 2 shows where the differences come from, and the "
-                  "counts there add up to the two \"only\" lines above.")
+    pointer = ("Part 2 shows where the differences come from, and the counts there add up to the two \"only\" "
+               "lines above.")
     note_html = f"<p>{html.escape(note)}</p>" if note else ""
-    return f"<p>{html.escape(intro)}</p>{note_html}{counts}{rows_line}<p>{html.escape(guess_line)}</p>"
+    return f"<p>{html.escape(intro)}</p>{note_html}{counts}{rows_line}<p>{html.escape(pointer)}</p>"
 
 
 @app.function
@@ -1070,37 +1056,73 @@ def trap_table_html(rows: list) -> str:
 
 
 @app.function
-def unreadable_list_html(my_list, my_cutoff, prediction: dict) -> str:
+def unreadable_sections(my_list, my_cutoff) -> tuple:
     row_count = len(my_list) if isinstance(my_list, (pd.DataFrame, pd.Series)) else 0
     cutoff = float(my_cutoff) if is_number(my_cutoff) else None
     intro = ("Your my_list has no usable parcel-ID column (PARID, PIN or pin), so it can't be compared with the "
-             f"correct list. It has {plural(row_count, 'row')}. In Predict you guessed {prediction['bucket']} homes.")
-    return (f"<h3 class='tc-h3'>Part 1 · Your list against the correct one</h3><p>{html.escape(intro)}</p>"
+             f"correct list. It has {plural(row_count, 'row')}.")
+    return (f"<h3 class='tc-h3'>Part 1 · Your list against the correct one</h3><p>{html.escape(intro)}</p>",
             "<h3 class='tc-h3'>Part 2 · What this scenario was testing</h3>" + trap_table_html(unreadable_rows(cutoff)))
 
 
 @app.function
-def evaluation_html(slim, liens, boundary, my_list, my_cutoff, prediction: dict) -> str:
-    """The evaluation page. Submit has already locked everything, so a list it can't read gets the short page
-    instead of an error."""
-    try:
-        return list_evaluation_html(slim, liens, boundary, my_list, my_cutoff, prediction)
-    except Exception:
-        return unreadable_list_html(my_list, my_cutoff, prediction)
+def readable_ids(my_list):
+    """The list's parcel IDs, or None when it can't be compared. Rows that all lack an ID can't be compared; only
+    a list with no rows at all counts as empty."""
+    ids = list_ids(my_list)
+    return None if ids is None or (ids.empty and len(my_list)) else ids
 
 
 @app.function
-def list_evaluation_html(slim, liens, boundary, my_list, my_cutoff, prediction: dict) -> str:
-    ids = list_ids(my_list)
-    # Rows that all lack an ID can't be compared; only a list with no rows at all counts as empty.
-    if ids is None or (ids.empty and len(my_list)):
-        return unreadable_list_html(my_list, my_cutoff, prediction)
+def evaluation_sections(slim, liens, boundary, my_list, my_cutoff, prediction: dict) -> tuple:
+    """Part 1 and Part 2 of the evaluation page. Submit has already locked everything, so a list it can't read
+    gets the short page instead of an error."""
+    try:
+        return list_evaluation_sections(slim, liens, boundary, my_list, my_cutoff)
+    except Exception:
+        return unreadable_sections(my_list, my_cutoff)
+
+
+@app.function
+def evaluation_html(slim, liens, boundary, my_list, my_cutoff, prediction: dict) -> str:
+    return "".join(evaluation_sections(slim, liens, boundary, my_list, my_cutoff, prediction))
+
+
+@app.function
+def list_evaluation_sections(slim, liens, boundary, my_list, my_cutoff) -> tuple:
+    ids = readable_ids(my_list)
+    if ids is None:
+        return unreadable_sections(my_list, my_cutoff)
     cutoff, note = resolve_cutoff(my_cutoff, ids, liens)
     diff = list_differences(ids, slim, liens, boundary, cutoff)
     rows = trap_rows(diff, cutoff, cutoff_card(slim, liens, boundary, cutoff))
     return ("<h3 class='tc-h3'>Part 1 · Your list against the correct one</h3>"
-            + comparison_html(diff, len(my_list), prediction["bucket"], cutoff, note)
-            + "<h3 class='tc-h3'>Part 2 · What this scenario was testing</h3>" + trap_table_html(rows))
+            + comparison_html(diff, len(my_list), cutoff, note),
+            "<h3 class='tc-h3'>Part 2 · What this scenario was testing</h3>" + trap_table_html(rows))
+
+
+@app.function
+def correct_list_frame(slim, liens, boundary, assessments, my_list, my_cutoff):
+    """Every home on the correct list, and whether the learner's list has it. None when the list can't be read."""
+    try:
+        ids = readable_ids(my_list)
+        if ids is None:
+            return None
+        cutoff = resolve_cutoff(my_cutoff, ids, liens)[0]
+    except Exception:
+        return None
+    correct = reference_list(slim, liens, boundary, cutoff).merge(
+        assessments[["PARID", "PROPERTYADDRESS"]], on="PARID", how="left")
+    shown = correct[["PARID", "PROPERTYADDRESS", "MUNIDESC", "USEDESC", "total_amount"]]
+    return shown.assign(**{"On your list": correct["PARID"].isin(ids).map({True: "Yes", False: "No"})})
+
+
+@app.function
+def correct_list_intro_html(frame) -> str:
+    text = (f"The correct list has {plural(len(frame), 'home')}, shown below. The last column, On your list, says "
+            "whether your list has each one. Filter it to No to see the homes your list left out. Homes that are only "
+            "on your list are counted in Part 2.")
+    return f"<h3 class='tc-h3'>The correct list</h3><p>{html.escape(text)}</p>"
 
 
 @app.function
@@ -1135,7 +1157,7 @@ def start_control(mo):
 @app.cell
 def predict_states(mo):
     get_predict_draft, set_predict_draft = mo.state(
-        {"boundary": None, "boundary_why": "", "types": [], "amount": "", "harmed": "", "bucket": None})
+        {"boundary": None, "boundary_why": "", "types": [], "amount": "", "harmed": ""})
     get_prediction, set_prediction = mo.state(None)
     return get_predict_draft, get_prediction, set_predict_draft, set_prediction
 
@@ -1154,8 +1176,6 @@ def predict_inputs(mo, set_predict_draft):
                              on_change=functools.partial(record_field, set_predict_draft, "amount")),
         "harmed": mo.ui.text_area(rows=3, full_width=True,
                                   on_change=functools.partial(record_field, set_predict_draft, "harmed")),
-        "bucket": mo.ui.radio(options=list(COUNT_BUCKETS), value=None,
-                              on_change=functools.partial(record_field, set_predict_draft, "bucket")),
     }
     lock_button = mo.ui.run_button(label="Lock my prediction", kind="success")
     return lock_button, predict_fields
@@ -1167,7 +1187,7 @@ def lock_prediction(get_predict_draft, lock_button, mo, set_prediction):
     _ready = prediction_ready(_draft)
     if lock_button.value and _ready:
         set_prediction({**_draft, "types": list(_draft["types"])})
-    lock_warning = (mo.Html("<div class='tc-doc'><p><i>Answer all four questions before you lock.</i></p></div>")
+    lock_warning = (mo.Html("<div class='tc-doc'><p><i>Answer all three questions before you lock.</i></p></div>")
                     if lock_button.value and not _ready else "")
     return (lock_warning,)
 
@@ -1179,7 +1199,7 @@ def predict(get_prediction, lock_button, lock_warning, mo, predict_fields, start
     _header = [
         mo.Html(stage_header_html(1)),
         mo.Html(f"<div class='tc-doc'><p>These questions may help you think it through:</p><ul class='tc-list'>"
-                f"{_guiding}</ul><p>Then answer the four questions below. Once you lock your prediction you "
+                f"{_guiding}</ul><p>Then answer the three questions below. Once you lock your prediction you "
                 "can't change it.</p></div>"),
     ]
     if get_prediction() is None:
@@ -1189,7 +1209,6 @@ def predict(get_prediction, lock_button, lock_warning, mo, predict_fields, start
             mo.md("**2.** Which kinds of home count as single-family?"), predict_fields["types"],
             mo.md("**3.** What lien amount would make you believe a house is abandoned? Who is harmed if you're wrong?"),
             predict_fields["amount"], predict_fields["harmed"],
-            mo.md("**4.** Roughly how many parcels will meet all three rules?"), predict_fields["bucket"],
             lock_button, lock_warning,
         ])
     else:
@@ -1366,11 +1385,17 @@ def evaluate(get_explain, get_final, get_prediction, get_submitted, mo, slim, ta
     # One cell with the download: a separate cell would re-run (and fail) whenever the Explain answers change.
     mo.stop(not get_submitted())
     _final = get_final()
-    _evaluation = evaluation_html(slim, tables["liens"], tables["boundary"], _final["my_list"], _final["my_cutoff"],
-                                  get_prediction())
-    _doc = report_html(get_prediction(), list_summary(_final, tables["liens"]), get_explain(), _evaluation)
+    _part1, _part2 = evaluation_sections(slim, tables["liens"], tables["boundary"], _final["my_list"],
+                                         _final["my_cutoff"], get_prediction())
+    _correct = correct_list_frame(slim, tables["liens"], tables["boundary"], tables["assessments"],
+                                  _final["my_list"], _final["my_cutoff"])
+    _correct_view = [] if _correct is None else [
+        mo.Html(f"<div class='tc-doc'>{correct_list_intro_html(_correct)}</div>"),
+        mo.ui.table(_correct, page_size=10, selection=None)]
+    _doc = report_html(get_prediction(), list_summary(_final, tables["liens"]), get_explain(), _part1 + _part2)
     mo.vstack([
-        mo.Html(stage_header_html(4)), mo.Html(f"<div class='tc-doc'>{_evaluation}</div>"),
+        mo.Html(stage_header_html(4)), mo.Html(f"<div class='tc-doc'>{_part1}</div>"), *_correct_view,
+        mo.Html(f"<div class='tc-doc'>{_part2}</div>"),
         mo.Html("<div class='tc-doc'><h3 class='tc-task'>Download your brief</h3><p>The file holds your prediction, "
                 "your list, your reflection and this evaluation. It opens in any browser; use Print, then Save as "
                 "PDF, for a PDF.</p></div>"),
