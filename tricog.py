@@ -703,30 +703,38 @@ def list_differences(ids, slim, liens, boundary, cutoff: float) -> dict:
     inside = set(boundary.loc[boundary["by_map"], "PARID"])
     records = slim.drop_duplicates("PARID").set_index("PARID")
     owed = liens.drop_duplicates("pin").set_index("pin")["total_amount"]
-    reasons = {"outside": 0, "not_single_family": {}, "no_lien": 0, "below_cutoff": 0}
+    reasons = {"outside": 0, "not_home": 0, "home_types": {}, "no_lien": 0, "below_cutoff": 0}
     for parid in extra:
         if parid not in inside:
             reasons["outside"] += 1
-        elif parid not in records.index or records.at[parid, "CLASSDESC"] != "RESIDENTIAL" or \
-                records.at[parid, "USEDESC"] not in REFERENCE_SETTINGS["types"]:
-            kind = records.at[parid, "USEDESC"] if parid in records.index else "no record"
-            kind = kind if isinstance(kind, str) else "no record"
-            reasons["not_single_family"][kind] = reasons["not_single_family"].get(kind, 0) + 1
+        elif parid not in records.index or records.at[parid, "CLASSDESC"] != "RESIDENTIAL":
+            reasons["not_home"] += 1
+        elif records.at[parid, "USEDESC"] not in REFERENCE_SETTINGS["types"]:
+            kind = records.at[parid, "USEDESC"]
+            kind = kind if isinstance(kind, str) else "no use code"
+            reasons["home_types"][kind] = reasons["home_types"].get(kind, 0) + 1
         elif parid not in owed.index or pd.isna(owed.at[parid]):
             reasons["no_lien"] += 1
         else:
             reasons["below_cutoff"] += 1
     missing = reference[~reference["PARID"].isin(listed)]
-    towns = missing["MUNIDESC"].map(town_name)
+    towns = missing["MUNIDESC"].map(town_name).str.upper()
     # A ward town counts as missed by name only when none of its homes made the list.
     listed_towns = set(reference.loc[reference["PARID"].isin(listed), "MUNIDESC"].map(town_name).str.upper())
-    ward = towns.str.upper().isin({"MCKEESPORT", "CLAIRTON"} - listed_towns)
+    ward = towns.isin({"MCKEESPORT", "CLAIRTON"} - listed_towns)
+    # Border homes recorded under a non-member town count as missed by name only when the list has none of them.
+    listed_munidesc = records.loc[records.index.isin(listed), "MUNIDESC"].dropna().map(town_name).str.upper()
+    border_listed = bool((~listed_munidesc.isin(MEMBER_TOWNS)).any())
+    border = ~towns.isin(MEMBER_TOWNS) & ~border_listed
+    empty = listed.size == 0
     return {
         **reasons,
-        "not_single_family": dict(sorted(reasons["not_single_family"].items(), key=lambda item: -item[1])),
+        "home_types": dict(sorted(reasons["home_types"].items(), key=lambda item: -item[1])),
         "duplicates": int(len(ids) - ids.nunique()),
-        "ward_towns": towns[ward].value_counts().to_dict(),
-        "other": int((~ward).sum()),
+        "ward_towns": {} if empty else missing.loc[ward, "MUNIDESC"].map(town_name).value_counts().to_dict(),
+        "border_towns": 0 if empty else int(border.sum()),
+        "other": 0 if empty else int((~ward & ~border).sum()),
+        "empty": empty,
         "listed": int(listed.size),
         "reference": len(reference),
     }
@@ -740,15 +748,16 @@ def reason_cards_html(diff: dict) -> str:
             ("The count", f"{diff['outside']:,} parcels on your list are outside TriCOG's member municipalities."),
             ("What happens", "By law the land bank can't buy them, so staff time goes into homes it can never take on."),
         )))
-    if diff["not_single_family"]:
-        total = sum(diff["not_single_family"].values())
-        multi = sum(count for kind, count in diff["not_single_family"].items() if kind in MULTI_FAMILY)
+    kinds = {**diff["home_types"], **({"not a home": diff["not_home"]} if diff["not_home"] else {})}
+    if kinds:
+        total = sum(kinds.values())
+        multi = sum(count for kind, count in kinds.items() if kind in MULTI_FAMILY)
         happens = "TriCOG makes offers on property its program can't use."
         if multi:
             happens += f" {multi:,} are two- to four-family homes, where tenants could lose their homes."
         cards.append(eval_card_html("not_single_family", "Parcels that aren't single-family homes", (
             ("The count", f"{total:,} parcels on your list: "
-                          f"{counts_text(diff['not_single_family'], lambda kind: kind.lower())}."),
+                          f"{counts_text(kinds, lambda kind: kind.lower())}."),
             ("What happens", happens),
         )))
     if diff["no_lien"]:
