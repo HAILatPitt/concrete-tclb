@@ -32,6 +32,14 @@ with app.setup:
         "cutoff": 0.0,
     }
     MULTI_FAMILY = ("TWO FAMILY", "THREE FAMILY", "FOUR FAMILY")
+    # TriCOG's 30 member municipalities, upper-case, as named in its boundary file.
+    MEMBER_TOWNS = (
+        "BLAWNOX", "BRADDOCK", "BRADDOCK HILLS", "CHALFANT", "CHURCHILL", "CLAIRTON", "DRAVOSBURG",
+        "EAST MCKEESPORT", "EAST PITTSBURGH", "EDGEWOOD", "ETNA", "FOREST HILLS", "GLASSPORT", "HOMESTEAD",
+        "MCKEESPORT", "MILLVALE", "MONROEVILLE", "MUNHALL", "NORTH BRADDOCK", "NORTH VERSAILLES", "PITCAIRN",
+        "RANKIN", "RESERVE", "SHARPSBURG", "SOUTH VERSAILLES", "SWISSVALE", "TURTLE CREEK", "WEST HOMESTEAD",
+        "WHITE OAK", "WILKINS",
+    )
     COUNT_BUCKETS = ("under 500", "500 to 5,000", "5,000 to 50,000", "more than 50,000")
     # Counts that don't depend on the student's settings, from the prepared snapshot (CONCRETE/docs/tclb_poee).
     MISMATCHED_CLIP_ROWS = 0
@@ -49,9 +57,10 @@ with app.setup:
         "shapes, not parcels.",
         "Residential parcels in the area carry 25 use codes. Adding rowhouses and townhouses brings in 575 more "
         "homes with liens, two- to four-family homes 643, and vacant land 9,330.",
-        "A left join keeps every home whether or not it has a lien: 53,858 rows, 46,144 of them owing nothing. "
+        "Among the single-family homes inside TriCOG, a left join keeps every home whether or not it has a "
+        "lien: 53,858 rows, 46,144 of them owing nothing. Cell 6 joins every home in the area, so it prints more. "
         "The row-by-row loop finds the same liens as an inner join, far more slowly.",
-        "A left join when combining keeps every parcel inside TriCOG: 85,765 rows, of which 31,907 are not "
+        "A left join when combining keeps every parcel inside TriCOG by the map: 85,765 rows, of which 31,907 are not "
         "single-family homes and 46,144 are homes with no lien.",
         "Half the homes on the list owe less than $1,479.46. 420 owe under $100 and 3,126 owe under $1,000.",
         "The parcels file repeats 468 parcel IDs. None of the repeats reach the list.",
@@ -281,7 +290,9 @@ def boundary_card(slim, liens, boundary, settings: dict) -> dict | None:
     reference = reference_list(slim, liens, boundary, settings["cutoff"])
     chosen = one_change(slim, liens, boundary, settings, "boundary")
     missed = reference[~reference["PARID"].isin(chosen["PARID"])]
-    return {"missed": len(missed), "by_town": missed["MUNIDESC"].map(town_name).value_counts().head(5).to_dict()}
+    towns = missed["MUNIDESC"].map(town_name)
+    member = towns.str.upper().isin(MEMBER_TOWNS)
+    return {"missed": len(missed), "by_town": towns[member].value_counts().to_dict(), "border": int((~member).sum())}
 
 
 @app.function
@@ -364,6 +375,18 @@ def shown_table(value) -> tuple:
 
 
 @app.function
+def drawn_table(frame):
+    """Format the table now, inside run_cell's guard: a table marimo can't draw (duplicate column names, say)
+    must not break the Observe stage later. None means "show it as text instead"."""
+    import marimo as mo
+
+    try:
+        return mo.as_html(frame)
+    except Exception:
+        return None
+
+
+@app.function
 def cut_text(text: str) -> str:
     if len(text) <= STDOUT_LIMIT:
         return text
@@ -376,6 +399,7 @@ def run_cell(code: str, tables: dict) -> dict:
     namespace = cell_namespace(tables)
     stdout = io.StringIO()
     value, error, caught = None, None, []
+    result, shown, size, text = None, None, None, None
     try:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -385,13 +409,18 @@ def run_cell(code: str, tables: dict) -> dict:
                 exec(compile(tree, "<cell>", "exec"), namespace)
                 if last is not None:
                     value = eval(compile(ast.Expression(last.value), "<cell>", "eval"), namespace)
+        if isinstance(value, (pd.DataFrame, pd.Series)):
+            result, size = shown_table(value)
+            shown = drawn_table(result)
+        if value is not None and shown is None:
+            text = cut_text(repr(value))
     except (Exception, SystemExit) as exc:
         error = f"{type(exc).__name__}: {exc}"
-    result, size = shown_table(value) if isinstance(value, (pd.DataFrame, pd.Series)) else (None, None)
     return {
         "stdout": cut_text(stdout.getvalue()),
-        "value": None if value is None or result is not None else cut_text(repr(value)),
+        "value": text,
         "result": result,
+        "shown": shown,
         "size": size,
         "warnings": list(dict.fromkeys(str(w.message) for w in caught))[:5],
         "error": error,
@@ -439,16 +468,9 @@ def record_field(setter, key: str, value) -> None:
 
 
 @app.function
-def run_and_record(editor, shared: dict, set_outputs, set_runs, key: str, _value=None) -> None:
-    result = run_cell(editor.value, shared["tables"])
-    set_outputs(lambda outputs: with_entry(outputs, key, result))
-    set_runs(lambda runs: with_entry(runs, key, runs.get(key, 0) + 1))
-
-
-@app.function
-def reload_tables(blobs: dict, shared: dict, set_reloads, _value=None) -> None:
-    shared["tables"] = load_tables(blobs)
-    set_reloads(lambda count: count + 1)
+def clicked_cells(clicks: dict, done: dict) -> list:
+    """Cells whose Run button has been clicked since we last ran them (each button counts its clicks)."""
+    return [key for key, count in clicks.items() if count > done.get(key, 0)]
 
 
 @app.function
@@ -525,7 +547,7 @@ def town_label(name: str) -> str:
 
 @app.function
 def counts_text(counts: dict, label) -> str:
-    return ", ".join(f"{count:,} {label(name)}" for name, count in list(counts.items())[:4])
+    return ", ".join(f"{count:,} {label(name)}" for name, count in counts.items())
 
 
 @app.function
@@ -535,13 +557,21 @@ def eval_card_html(card_id: str, title: str, rows: tuple) -> str:
 
 
 @app.function
+def border_text(border: int) -> str:
+    if not border:
+        return ""
+    return f", and {border:,} on parcels that straddle TriCOG's border and are recorded under a neighbouring town"
+
+
+@app.function
 def boundary_card_html(card: dict) -> str:
     return eval_card_html("boundary", "Finding parcels by town name", (
         ("What you chose", "You matched town names instead of using the map."),
         ("Why it matters", "McKeesport's and Clairton's assessment records are split into wards, so their names "
                            "never match TriCOG's list."),
-        ("The count", f"{card['missed']:,} homes that meet every rule are missing from your list: "
-                      f"{counts_text(card['by_town'], lambda name: 'in ' + town_label(name))}."),
+        ("The count", f"{card['missed']:,} homes on the map-based list are missing from yours: "
+                      f"{counts_text(card['by_town'], lambda name: 'in ' + town_label(name))}"
+                      f"{border_text(card['border'])}."),
         ("What happens", "Eligible empty houses in those towns are never considered, and TriCOG's effort shifts "
                          "away from them."),
     ))
@@ -597,14 +627,20 @@ def small_debts_text(card: dict) -> str:
 
 
 @app.function
+def removed_text(removed: int) -> str:
+    if not removed:
+        return "None. Every home with a lien stays on your list, including the smallest debts above."
+    return f"{removed:,} homes with a lien. If any of them are abandoned, they stay empty."
+
+
+@app.function
 def cutoff_card_html(card: dict, cutoff: float) -> str:
     return eval_card_html("cutoff", "Your lien cutoff", (
         ("What you chose", f"Keep homes whose liens total more than ${cutoff:,.0f}."),
         ("What the data can't say", "No column says whether a home is abandoned or lived in, so a lien is only "
                                     "a clue."),
         ("Small debts", small_debts_text(card)),
-        ("Homes your cutoff removed", f"{card['removed']:,} homes with a lien. If any of them are abandoned, "
-                                      "they stay empty."),
+        ("Homes your cutoff removed", removed_text(card["removed"])),
     ))
 
 
@@ -667,10 +703,11 @@ def opening(mo, start_button):
 
 
 @app.cell
-def start_state(mo):
-    get_started, set_started = mo.state(False)
-    start_button = mo.ui.button(label="Start with Stage 1", kind="success", on_change=lambda _value: set_started(True))
-    return get_started, start_button
+def start_control(mo):
+    # Buttons here count their clicks and cells read the count: in the browser build, a button's on_change
+    # callback fires only for its first click.
+    start_button = mo.ui.button(value=0, on_click=lambda count: count + 1, label="Start with Stage 1", kind="success")
+    return (start_button,)
 
 
 @app.cell
@@ -683,7 +720,7 @@ def predict_states(mo):
 
 @app.cell
 def predict_inputs(mo, set_predict_draft):
-    # Plain dict: the cell that shows these must not re-run while the learner types.
+    # Created once here, so re-running the cell that shows them never wipes what the learner typed.
     predict_fields = {
         "boundary": mo.ui.radio(options={label: key for key, label in BOUNDARY_LABELS.items()}, value=None,
                                 on_change=functools.partial(record_field, set_predict_draft, "boundary")),
@@ -714,8 +751,8 @@ def lock_prediction(get_predict_draft, lock_button, mo, set_prediction):
 
 
 @app.cell(hide_code=True)
-def predict(get_prediction, get_started, lock_button, lock_warning, mo, predict_fields):
-    mo.stop(not get_started())
+def predict(get_prediction, lock_button, lock_warning, mo, predict_fields, start_button):
+    mo.stop(not start_button.value)
     _guiding = "".join(f"<li>{html.escape(q)}</li>" for q in PREDICT_GUIDING)
     _header = [
         mo.Html(stage_header_html(1)),
@@ -752,42 +789,52 @@ async def load_data(mo):
 
 @app.cell
 def observe_states(mo):
-    get_cells, set_cells = mo.state({key: cell["code"] for key, cell in STARTER_CELLS.items()})
-    get_runs, set_runs = mo.state({key: 0 for key in STARTER_CELLS})
-    get_outputs, set_outputs = mo.state({key: None for key in STARTER_CELLS})
-    get_director, set_director = mo.state(False)
-    get_reloads, set_reloads = mo.state(0)
     get_submitted, set_submitted = mo.state(False)
     get_final_settings, set_final_settings = mo.state(None)
-    return (
-        get_cells, get_director, get_final_settings, get_outputs, get_reloads, get_runs, get_submitted,
-        set_cells, set_director, set_final_settings, set_outputs, set_reloads, set_runs, set_submitted,
-    )
+    # Plain dicts: how many clicks of each button have been acted on, and each cell's latest output.
+    run_log = {"done": {}, "outputs": {}}
+    reload_log = {"done": 0}
+    return get_final_settings, get_submitted, reload_log, run_log, set_final_settings, set_submitted
 
 
 @app.cell
-def cell_controls(blobs, mo, set_cells, set_director, set_outputs, set_reloads, set_runs, shared):
-    # Plain dicts: the cell that renders these must not re-run while the learner types.
+def cell_controls(mo):
+    # Created once here, so re-running the cell that shows them never wipes the learner's code. The editors sit
+    # in a plain dict, so a keystroke re-runs nothing; a Run click reads the code straight from the editor.
     cell_editors = {
-        key: mo.ui.code_editor(value=cell["code"], language="python", min_height=100,
-                               on_change=functools.partial(record_field, set_cells, key))
+        key: mo.ui.code_editor(value=cell["code"], language="python", min_height=100)
         for key, cell in STARTER_CELLS.items()
     }
-    cell_run_buttons = {
-        key: mo.ui.run_button(label="Run", on_change=functools.partial(
-            run_and_record, cell_editors[key], shared, set_outputs, set_runs, key))
-        for key in STARTER_CELLS
-    }
-    director_button = mo.ui.button(label="Ask the director", on_change=lambda _value: set_director(True))
-    reload_button = mo.ui.button(label="Reload the data",
-                                 on_change=functools.partial(reload_tables, blobs, shared, set_reloads))
+    cell_run_buttons = mo.ui.dictionary({
+        key: mo.ui.button(value=0, on_click=lambda count: count + 1, label="Run") for key in STARTER_CELLS
+    })
+    director_button = mo.ui.button(value=0, on_click=lambda count: count + 1, label="Ask the director")
+    reload_button = mo.ui.button(value=0, on_click=lambda count: count + 1, label="Reload the data")
     return cell_editors, cell_run_buttons, director_button, reload_button
 
 
+@app.cell
+def reload_data(blobs, reload_button, reload_log, shared):
+    if reload_button.value > reload_log["done"]:
+        shared["tables"] = load_tables(blobs)
+        reload_log["done"] = reload_button.value
+    return
+
+
+@app.cell
+def run_clicked_cells(cell_editors, cell_run_buttons, run_log, shared):
+    for _key in clicked_cells(cell_run_buttons.value, run_log["done"]):
+        run_log["outputs"][_key] = run_cell(cell_editors[_key].value, shared["tables"])
+        run_log["done"][_key] = cell_run_buttons.value[_key]
+    cell_outputs = dict(run_log["outputs"])
+    runs = dict(run_log["done"])
+    return cell_outputs, runs
+
+
 @app.cell(hide_code=True)
-def observe_intro(get_prediction, get_reloads, mo, reload_button):
+def observe_intro(get_prediction, mo, reload_button):
     mo.stop(get_prediction() is None)
-    _reloaded = f" Reloaded {get_reloads()} time(s)." if get_reloads() else ""
+    _reloaded = f" Reloaded {reload_button.value} time(s)." if reload_button.value else ""
     mo.vstack([
         mo.Html(stage_header_html(2)),
         mo.md("Each cell below runs as written, with no errors, and each one hides a problem you'll only see if "
@@ -800,20 +847,21 @@ def observe_intro(get_prediction, get_reloads, mo, reload_button):
 
 
 @app.cell(hide_code=True)
-def observe_cells(cell_editors, cell_run_buttons, director_button, get_cells, get_director, get_outputs,
-                  get_prediction, get_submitted, mo):
+def observe_cells(cell_editors, cell_outputs, cell_run_buttons, director_button, get_prediction, get_submitted, mo):
     mo.stop(get_prediction() is None)
     _panels = []
     for _number, (_key, _cell) in enumerate(STARTER_CELLS.items(), 1):
-        _result = get_outputs()[_key]
+        _result = cell_outputs.get(_key)
         _shown = [mo.md("*Not run yet.*")]
         if _result is not None:
             _shown = []
             if _result["stdout"]:
                 _shown.append(mo.md(f"```\n{_result['stdout']}\n```"))
-            if _result["result"] is not None:
-                _shown += [mo.md(f"*{_result['size']}*"), _result["result"]]
-            elif _result["value"] is not None:
+            if _result["size"] is not None:
+                _shown.append(mo.md(f"*{_result['size']}*"))
+            if _result["shown"] is not None:
+                _shown.append(_result["shown"])
+            if _result["value"] is not None:
                 _shown.append(mo.md(f"```\n{_result['value']}\n```"))
             for _warning in _result["warnings"]:
                 _shown.append(mo.callout(mo.md(f"**Warning from Python**\n\n```\n{_warning}\n```"), kind="warn"))
@@ -822,8 +870,8 @@ def observe_cells(cell_editors, cell_run_buttons, director_button, get_cells, ge
             if not _shown:
                 _shown = [mo.md("*Ran with no output.*")]
         if _key == "single_family":
-            _shown.append(mo.callout(DIRECTOR_REPLY, kind="info") if get_director() else director_button)
-        _code = ([mo.md(f"```python\n{get_cells()[_key]}\n```")] if get_submitted()
+            _shown.append(mo.callout(DIRECTOR_REPLY, kind="info") if director_button.value else director_button)
+        _code = ([mo.md(f"```python\n{cell_editors[_key].value}\n```")] if get_submitted()
                  else [cell_editors[_key], cell_run_buttons[_key]])
         _panels.append(mo.vstack([
             mo.md(f"#### Code cell {_number} of {len(STARTER_CELLS)}: {_cell['title']}\n\n*{_cell['hint']}*"),
@@ -874,9 +922,9 @@ def build_your_list(boundary_control, combine_control, cutoff_control, get_final
 
 
 @app.cell(hide_code=True)
-def observe_gate(get_prediction, get_runs, mo):
+def observe_gate(get_prediction, mo, runs):
     mo.stop(get_prediction() is None)
-    _waiting = [cell["title"] for key, cell in STARTER_CELLS.items() if get_runs()[key] == 0]
+    _waiting = [cell["title"] for key, cell in STARTER_CELLS.items() if runs.get(key, 0) == 0]
     (mo.callout(f"Run every code cell at least once to continue to Stage 3. Still to run: {', '.join(_waiting)}.",
                 kind="neutral") if _waiting else mo.md("*You've run every cell. Stage 3 is below.*"))
     return
@@ -891,7 +939,7 @@ def explain_inputs(mo):
 
 @app.cell
 def explain_fields(mo, set_explain):
-    # Plain dict: the explain cell must not re-run while the learner types.
+    # Created once here, so re-running the explain cell never wipes what the learner typed.
     explain_fields = {
         f"r{i}": mo.ui.text_area(rows=5, full_width=True, on_change=functools.partial(record_field, set_explain, f"r{i}"))
         for i in range(1, len(EXPLAIN_PROMPTS) + 1)
@@ -914,8 +962,8 @@ def submit_action(boundary_control, combine_control, cutoff_control, get_explain
 
 
 @app.cell(hide_code=True)
-def explain(explain_fields, get_explain, get_prediction, get_runs, get_submitted, mo, submit_button, submit_warning):
-    mo.stop(not explain_unlocked(get_prediction(), get_runs()))
+def explain(explain_fields, get_explain, get_prediction, get_submitted, mo, runs, submit_button, submit_warning):
+    mo.stop(not explain_unlocked(get_prediction(), runs))
     _header = [mo.Html(stage_header_html(3)), mo.Html(locked_prediction_html(get_prediction()))]
     if get_submitted():
         _answers = "".join(f"<p><b>{html.escape(q)}</b><br>{paragraph_html(get_explain()[f'r{i}'])}</p>"
