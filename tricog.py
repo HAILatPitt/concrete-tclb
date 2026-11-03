@@ -80,21 +80,51 @@ with app.setup:
     OPENING_CARDS = {
         "story": {
             "title": "The story so far",
-            "text": "The TriCOG Land Bank buys abandoned homes and makes them available as affordable housing. By "
-                    "law it can only buy inside its 30 member municipalities, east and north of Pittsburgh. Tax "
-                    "liens are its clue that a house may be abandoned: an owner who walks away stops paying "
-                    "property tax.",
+            "text": "Across the Mon Valley and Pittsburgh's eastern suburbs, many houses stand empty. Owners move "
+                    "away or die, taxes go unpaid, and the houses decay. An empty house costs its neighbours: lower "
+                    "property values, pests and break-ins, and more spending by the town on inspections, police "
+                    "and fire calls. In 2017, two councils of governments here set up the Tri-COG Land Bank to break "
+                    "that cycle. Pennsylvania's Land Bank Act lets it take over vacant, tax-delinquent properties, "
+                    "clear their titles, and sell them to people who will live in them or fix them up. The same law "
+                    "limits it: TriCOG can act only in the municipalities that have joined it.",
         },
         "role": {
             "title": "Your role",
-            "text": "You're an intern working with TriCOG's data analyst. The director wants a first list of homes "
-                    "the land bank should look at.",
+            "text": "You've just started as an intern on TriCOG's small staff. You work with the land bank's GIS "
+                    "and data analyst, who looks after the maps and county records. The director, who runs the "
+                    "land bank, wants a first list of homes to look at before the next round of purchases. The "
+                    "analyst has handed the data work to you. You can ask the director questions while you work.",
         },
         "deliver": {
             "title": "What you deliver",
-            "text": "A list of parcels that meet three rules: inside TriCOG, a single-family home, and at least one "
-                    "tax lien. Then a short note to the director saying how far to trust it.",
+            "text": "A list of parcels that meet three rules: inside TriCOG's member municipalities, a single-family "
+                    "home, and signs of abandonment. No dataset says which homes are abandoned, so the director "
+                    "suggests tax liens as the clue: an owner who walks away stops paying property tax. With the "
+                    "list, you write a short note to the director: how you built it, how far to trust it, and who "
+                    "could be hurt if it's wrong. The list has real effects. Staff will visit these homes, and "
+                    "their owners may get letters.",
         },
+        "words": {
+            "title": "Words you'll meet",
+            "text": "Parcel: one piece of land with its own ID, usually a house with its yard and driveway.\n"
+                    "Municipality: a town, borough or township with its own local government. TriCOG's boundary "
+                    "file holds 30 of them.\n"
+                    "Tax delinquency: being behind on property tax. Paying what's owed ends it.\n"
+                    "Tax lien: a legal claim on a property for unpaid tax. It has to be paid off before the "
+                    "property can be sold.\n"
+                    "Coordinate system: the way a map file turns places into numbers, such as feet on a "
+                    "Pennsylvania grid or degrees of longitude and latitude.",
+        },
+    }
+    STAGE_INTROS = {
+        1: "Before you open the data, decide what you expect. You'll lock four answers here and come back to them "
+           "at the end. Nobody grades them.",
+        2: "You'll build the director's list in eight tasks. Each task shows you some of the data first and says in "
+           "plain words what to do, and you write the code. What you save in one task is there for the next, and "
+           "task 8 saves your finished list as my_list.",
+        3: "Look back at what you predicted and what the data showed. Your answers go to the director with your list.",
+        4: "Your list is compared with the one that follows TriCOG's three rules at your own cutoff. Each card counts "
+           "one difference and says what it would mean for real households.",
     }
     PREDICT_GUIDING = (
         "What could go wrong if you find places by matching their names?",
@@ -110,20 +140,24 @@ with app.setup:
         "How did you choose your lien cutoff, and who carries the risk of that choice?",
         "A note to the director: your list, how far to trust it, and who might be harmed.",
     )
+    # Pitt Royal for headings and links, a Pitt Gold rule under stage headings; structure from size and weight only.
     STYLE = """
-    .tc-card{border:1px solid rgba(127,127,127,.35);border-radius:8px;padding:10px 16px;margin:8px 0}
-    .tc-card h4,.tc-eval h4{margin:0 0 4px;font-size:1.05rem;font-weight:700}
-    .tc-title{font-size:2rem;font-weight:700;margin:16px 0}
-    .tc-h3{font-size:1.25rem;font-weight:700;margin:22px 0 6px}
+    .tc-doc{font-family:Georgia,"Times New Roman",serif;color:#222;font-size:15px;line-height:1.55}
+    .tc-doc p{margin:6px 0}
+    .tc-doc a{color:#003594}
+    .tc-title{font-family:Georgia,"Times New Roman",serif;color:#003594;font-size:30px;font-weight:700;line-height:1.2;margin:16px 0 18px}
+    .tc-stage h2{color:#003594;font-size:23px;font-weight:700;margin:36px 0 6px;padding-bottom:4px;border-bottom:3px solid #FFB81C}
+    .tc-task{color:#003594;font-size:18px;font-weight:700;margin:22px 0 4px}
+    .tc-sub{font-size:15px;font-weight:700;margin:14px 0 4px}
+    .tc-card{margin:16px 0}
+    .tc-card h4,.tc-eval h4{color:#003594;font-size:18px;font-weight:700;margin:0 0 4px}
+    .tc-h3{color:#003594;font-size:18px;font-weight:700;margin:24px 0 6px}
+    .tc-eval{border-top:1px solid #ccc;padding-top:8px;margin:14px 0}
+    .tc-eval dt{font-weight:700;margin-top:6px}
+    .tc-eval dd{margin:0 0 4px 0}
     .tc-list{list-style:disc;padding-left:1.5em}
     ol.tc-list{list-style:decimal}
     .tc-list li{margin:4px 0}
-    .tc-stage{border-bottom:2px solid rgba(127,127,127,.5);margin:32px 0 8px;padding-bottom:4px}
-    .tc-stage h2{font-size:1.6rem;font-weight:700;margin:2px 0}
-    .tc-stage small{opacity:.7;text-transform:uppercase;letter-spacing:.05em}
-    .tc-eval{border-left:4px solid #bf8700;border-radius:4px;padding:8px 16px;margin:10px 0}
-    .tc-eval dt{font-weight:600;margin-top:6px}
-    .tc-eval dd{margin:0 0 4px 0}
     """
 
     STDOUT_LIMIT = 5000
@@ -518,7 +552,8 @@ def can_submit(fields: dict) -> bool:
 
 @app.function
 def stage_header_html(stage: int) -> str:
-    return f"<div class='tc-stage'><small>Stage {stage} of 4</small><h2>{STAGES[stage - 1]}</h2></div>"
+    return (f"<div class='tc-doc tc-stage'><h2>Stage {stage}: {STAGES[stage - 1]}</h2>"
+            f"<p>{html.escape(STAGE_INTROS[stage], quote=False)}</p></div>")
 
 
 @app.function
@@ -528,9 +563,10 @@ def paragraph_html(text: str) -> str:
 
 @app.function
 def opening_cards_html() -> str:
-    cards = "".join(f"<div class='tc-card'><h4>{html.escape(card['title'])}</h4><p>{html.escape(card['text'])}</p></div>"
+    cards = "".join(f"<div class='tc-card'><h4>{html.escape(card['title'])}</h4><p>{paragraph_html(card['text'])}</p></div>"
                     for card in OPENING_CARDS.values())
-    return f"<style>{STYLE}</style><h1 class='tc-title'>Finding abandoned homes for the TriCOG Land Bank</h1>{cards}"
+    return (f"<style>{STYLE}</style><div class='tc-doc'><h1 class='tc-title'>Finding abandoned homes for the TriCOG "
+            f"Land Bank</h1>{cards}</div>")
 
 
 @app.function
