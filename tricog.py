@@ -271,7 +271,8 @@ with app.setup:
             "title": "Look at the data",
             "director": "The analyst left you four tables. Before anything else, find out what is in each one.",
             "hint": "Look through each table in the tabs above and read the note on every column. Find which column "
-                    "holds the parcel ID in each table: it has a different name in three of them. Then find which "
+                    "holds the parcel ID: it has a different name in each of the three tables that have one. Then "
+                    "find which "
                     "two tables can be drawn on a map, and what coordinate system each of them uses. Nothing needs "
                     "saving here.",
             "functions": "table.columns, table.head(), table.dtypes, table.crs",
@@ -382,28 +383,28 @@ with app.setup:
     COLUMN_NOTES = {
         "assessments": {
             "PARID": "The county's parcel ID, a 16-character code such as 0858M00274000000.",
-            "PROPERTYADDRESS": "The street address of the property, when it has one.",
-            "MUNICODE": "The county's number for the municipality the parcel is in, such as 879.",
+            "PROPERTYADDRESS": "The street the property is on, such as SMITHFIELD ST, without a house number.",
+            "MUNICODE": "The county's number for the municipality, or part of a city, the parcel is in, such as 879.",
             "MUNIDESC": "The name of that municipality as the county writes it, such as Monroeville or Braddock.",
             "OWNERDESC": "The kind of owner, such as REGULAR (a person) or CORPORATION.",
             "CLASSDESC": "The broad class of the property, such as RESIDENTIAL, COMMERCIAL or GOVERNMENT.",
             "USEDESC": "What the property is used for, such as SINGLE FAMILY or MUNICIPAL GOVERNMENT.",
-            "YEARBLT": "The year the building was built, blank for land with no building.",
+            "YEARBLT": "The year the building was built, often blank for vacant land and for buildings that aren't homes.",
             "CONDITIONDESC": "The assessor's rating of the building, such as GOOD, FAIR or VERY POOR.",
             "SALEDATE": "The date of the last recorded sale, written month, day, year, such as 07-02-2013.",
             "SALEPRICE": "The price of that last sale, in dollars.",
             "FAIRMARKETTOTAL": "The county's estimate of what the land and building together are worth, in dollars.",
         },
         "liens": {
-            "pin": "The parcel ID the liens are filed against, the same 16-character code.",
+            "pin": "The parcel ID the liens are filed against, usually the same 16-character code.",
             "number": "How many tax liens are filed against the parcel.",
             "total_amount": "The total owed on those liens, in dollars.",
         },
         "parcels": {
-            "PIN": "The parcel ID, the same 16-character code.",
+            "PIN": "The parcel ID, usually the same 16-character code.",
             "MAPBLOCKLO": "The parcel's map, block and lot number on the county's maps, such as 858-M-274.",
-            "MUNICODE": "The county's number for the municipality the parcel is in.",
-            "CALCACREAG": "The parcel's area in acres, worked out from its shape.",
+            "MUNICODE": "The county's number for the municipality, or part of a city, the parcel is in.",
+            "CALCACREAG": "The parcel's area in acres, though many small lots read 0 even though they have a shape.",
             "Shape_Leng": "The length of the parcel's outline, in feet.",
             "geometry": "The parcel's shape, shown here as its type.",
         },
