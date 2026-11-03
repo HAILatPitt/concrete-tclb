@@ -494,8 +494,47 @@ def task_preview(key: str, tables: dict):
 
 
 @app.function
-def explain_unlocked(prediction, runs: dict) -> bool:
-    return prediction is not None and all(runs.get(key, 0) >= 1 for key in TASKS)
+def list_ready(namespace: dict) -> bool:
+    return isinstance(namespace.get("my_list"), pd.DataFrame)
+
+
+@app.function
+def frozen_list(namespace: dict) -> dict:
+    """The learner's list and cutoff as they were at Submit; later changes to the namespace can't reach them."""
+    my_list = namespace.get("my_list")
+    return {"my_list": my_list.copy() if isinstance(my_list, (pd.DataFrame, pd.Series)) else my_list,
+            "my_cutoff": namespace.get("my_cutoff")}
+
+
+@app.function
+def list_summary(frozen: dict, liens) -> dict:
+    ids = list_ids(frozen["my_list"])
+    rows = len(frozen["my_list"]) if isinstance(frozen["my_list"], pd.DataFrame) else 0
+    cutoff = resolve_cutoff(frozen["my_cutoff"], ids, liens)[0] if ids is not None else 0.0
+    return {"rows": rows, "cutoff": cutoff}
+
+
+@app.function
+def task_output_parts(mo, result: dict | None) -> list:
+    """What one task's last run produced, as plain page elements (no coloured boxes)."""
+    if result is None:
+        return [mo.md("*Not run yet.*")]
+    parts = []
+    if result["stdout"]:
+        parts.append(mo.md(f"```\n{result['stdout']}\n```"))
+    if result["size"] is not None:
+        parts.append(mo.md(f"*{result['size']}*"))
+    if result["shown"] is not None:
+        parts.append(result["shown"])
+    if result["value"] is not None:
+        parts.append(mo.md(f"```\n{result['value']}\n```"))
+    if result["figure"] is not None:
+        parts.append(mo.Html(result["figure"]))
+    for warning in result["warnings"]:
+        parts.append(mo.md(f"**Python's warning**\n\n```\n{warning}\n```"))
+    if result["error"]:
+        parts.append(mo.md(f"**Python's error**\n\n```\n{result['error']}\n```"))
+    return parts or [mo.md("*Ran with no output.*")]
 
 
 @app.function
@@ -852,7 +891,7 @@ def lock_prediction(get_predict_draft, lock_button, mo, set_prediction):
     _ready = prediction_ready(_draft)
     if lock_button.value and _ready:
         set_prediction({**_draft, "types": list(_draft["types"])})
-    lock_warning = (mo.callout("Answer all four questions before you lock.", kind="warn")
+    lock_warning = (mo.Html("<div class='tc-doc'><p><i>Answer all four questions before you lock.</i></p></div>")
                     if lock_button.value and not _ready else "")
     return (lock_warning,)
 
@@ -863,9 +902,9 @@ def predict(get_prediction, lock_button, lock_warning, mo, predict_fields, start
     _guiding = "".join(f"<li>{html.escape(q)}</li>" for q in PREDICT_GUIDING)
     _header = [
         mo.Html(stage_header_html(1)),
-        mo.Html(f"<p>Before you look at the data, decide what you think. These questions may help, and nobody "
-                f"grades them:</p><ul class='tc-list'>{_guiding}</ul><p>Then answer the four questions below. "
-                "<b>Once you lock your prediction you can't change it.</b></p>"),
+        mo.Html(f"<div class='tc-doc'><p>These questions may help you think it through:</p><ul class='tc-list'>"
+                f"{_guiding}</ul><p>Then answer the four questions below. Once you lock your prediction you "
+                "can't change it.</p></div>"),
     ]
     if get_prediction() is None:
         _output = mo.vstack(_header + [
@@ -888,112 +927,100 @@ async def load_data(mo):
     # A local folder when run locally, a URL in the browser build.
     _base = mo.notebook_location() / "public" / "data"
     blobs = await fetch_blobs(str(_base)) if "pyodide" in sys.modules else read_blobs_local(_base)
-    # A plain dict, so "Reload the data" can swap in fresh tables without re-running the cells that use them.
-    shared = {"tables": load_tables(blobs)}
-    slim = slim_table(shared["tables"])
-    return blobs, shared, slim
+    tables = load_tables(blobs)
+    slim = slim_table(tables)
+    # One plain dict for the whole session: every task runs in it, so results chain like notebook cells.
+    namespace = make_namespace(tables)
+    task_previews = {key: task_preview(key, tables) for key in TASKS}
+    return blobs, namespace, slim, tables, task_previews
 
 
 @app.cell
 def observe_states(mo):
     get_submitted, set_submitted = mo.state(False)
-    get_final_settings, set_final_settings = mo.state(None)
-    # Plain dicts: how many clicks of each button have been acted on, and each cell's latest output.
+    get_final, set_final = mo.state(None)
+    # Plain dicts: how many clicks of each button have been acted on, and each task's latest output.
     run_log = {"done": {}, "outputs": {}}
     reload_log = {"done": 0}
-    return get_final_settings, get_submitted, reload_log, run_log, set_final_settings, set_submitted
+    return get_final, get_submitted, reload_log, run_log, set_final, set_submitted
 
 
 @app.cell
-def cell_controls(mo):
+def task_controls(mo):
     # Created once here, so re-running the cell that shows them never wipes the learner's code. The editors sit
     # in a plain dict, so a keystroke re-runs nothing; a Run click reads the code straight from the editor.
-    cell_editors = {
-        key: mo.ui.code_editor(value=cell["starter"], language="python", min_height=100)
-        for key, cell in TASKS.items()
+    task_editors = {
+        key: mo.ui.code_editor(value=task["starter"], language="python", min_height=90)
+        for key, task in TASKS.items()
     }
-    cell_run_buttons = mo.ui.dictionary({
+    task_run_buttons = mo.ui.dictionary({
         key: mo.ui.button(value=0, on_click=lambda count: count + 1, label="Run") for key in TASKS
     })
-    director_button = mo.ui.button(value=0, on_click=lambda count: count + 1, label="Ask the director")
     reload_button = mo.ui.button(value=0, on_click=lambda count: count + 1, label="Reload the data")
-    return cell_editors, cell_run_buttons, director_button, reload_button
+    return reload_button, task_editors, task_run_buttons
 
 
 @app.cell
-def reload_data(blobs, reload_button, reload_log, shared):
+def reload_data(blobs, namespace, reload_button, reload_log):
     if reload_button.value > reload_log["done"]:
-        shared["tables"] = load_tables(blobs)
+        reload_into(namespace, load_tables(blobs))
         reload_log["done"] = reload_button.value
     return
 
 
 @app.cell
-def run_clicked_cells(cell_editors, cell_run_buttons, run_log, shared):
-    for _key in clicked_cells(cell_run_buttons.value, run_log["done"]):
-        run_log["outputs"][_key] = run_code(cell_editors[_key].value, make_namespace(shared["tables"]))
-        run_log["done"][_key] = cell_run_buttons.value[_key]
-    cell_outputs = dict(run_log["outputs"])
-    runs = dict(run_log["done"])
-    return cell_outputs, runs
+def run_clicked_tasks(namespace, run_log, task_editors, task_run_buttons):
+    for _key in clicked_cells(task_run_buttons.value, run_log["done"]):
+        run_log["outputs"][_key] = run_code(task_editors[_key].value, namespace)
+        run_log["done"][_key] = task_run_buttons.value[_key]
+    task_outputs = dict(run_log["outputs"])
+    list_saved = list_ready(namespace)
+    return list_saved, task_outputs
 
 
 @app.cell(hide_code=True)
-def observe_intro(get_prediction, mo, reload_button):
+def observe(get_prediction, get_submitted, mo, reload_button, task_editors, task_outputs, task_previews,
+            task_run_buttons):
     mo.stop(get_prediction() is None)
-    _reloaded = f" Reloaded {reload_button.value} time(s)." if reload_button.value else ""
-    mo.vstack([
+    _reloaded = f" The data has been reloaded {reload_button.value} time(s)." if reload_button.value else ""
+    _panels = [
         mo.Html(stage_header_html(2)),
-        mo.md("Each cell below runs as written, with no errors, and each one hides a problem you'll only see if "
-              "you look closely. Edit the code and run it again as often as you like; nothing here is marked "
-              "right or wrong. Every cell starts from the prepared tables, so one cell can't break another. If "
-              f"your code changes `assessments` itself, reload the data.{_reloaded}"),
+        mo.Html(f"<div class='tc-doc'><p>If your code changes one of the four prepared tables and you want it "
+                f"back as it was, reload the data. Your own results stay.{_reloaded}</p></div>"),
         reload_button,
-    ])
+    ]
+    for _number, (_key, _task) in enumerate(TASKS.items(), 1):
+        _preview = task_previews[_key]
+        _panels += [
+            mo.Html(f"<div class='tc-doc'><h3 class='tc-task'>Task {_number}. {html.escape(_task['title'])}</h3>"
+                    f"<p>The director writes: \"{html.escape(_task['director'])}\"</p>"
+                    "<p class='tc-sub'>The data</p></div>"),
+            mo.Html(f"<div class='tc-doc'><p>{html.escape(_preview)}</p></div>") if isinstance(_preview, str)
+            else table_ready(_preview),
+            mo.Html(f"<div class='tc-doc'><p class='tc-sub'>What to do</p><p>{html.escape(_task['hint'])}</p></div>"),
+            mo.accordion({
+                "Show the pandas functions": mo.md(f"`{_task['functions']}`"),
+                "Show an example": mo.md(f"```python\n{_task['example']}\n```"),
+            }),
+        ]
+        if get_submitted():
+            _panels.append(mo.md(f"```python\n{task_editors[_key].value}\n```"))
+        else:
+            _panels += [task_editors[_key], task_run_buttons[_key]]
+        _panels += task_output_parts(mo, task_outputs.get(_key))
+    # Sticky, so the questions stay beside whichever task the learner is on.
+    _questions = mo.vstack([
+        mo.Html("<div class='tc-doc'><p class='tc-sub' style='color:#003594'>Questions for the director</p></div>"),
+        mo.accordion({question: mo.md(answer) for question, answer in DIRECTOR_QUESTIONS}),
+    ]).style({"position": "sticky", "top": "16px"})
+    mo.hstack([mo.vstack(_panels, gap=0.75), _questions], widths=[3, 1.2], align="start", gap=1.5)
     return
 
 
 @app.cell(hide_code=True)
-def observe_cells(cell_editors, cell_outputs, cell_run_buttons, director_button, get_prediction, get_submitted, mo):
-    mo.stop(get_prediction() is None)
-    _panels = []
-    for _number, (_key, _cell) in enumerate(TASKS.items(), 1):
-        _result = cell_outputs.get(_key)
-        _shown = [mo.md("*Not run yet.*")]
-        if _result is not None:
-            _shown = []
-            if _result["stdout"]:
-                _shown.append(mo.md(f"```\n{_result['stdout']}\n```"))
-            if _result["size"] is not None:
-                _shown.append(mo.md(f"*{_result['size']}*"))
-            if _result["shown"] is not None:
-                _shown.append(_result["shown"])
-            if _result["value"] is not None:
-                _shown.append(mo.md(f"```\n{_result['value']}\n```"))
-            for _warning in _result["warnings"]:
-                _shown.append(mo.callout(mo.md(f"**Warning from Python**\n\n```\n{_warning}\n```"), kind="warn"))
-            if _result["error"]:
-                _shown.append(mo.callout(mo.md(f"**Error**\n\n```\n{_result['error']}\n```"), kind="danger"))
-            if not _shown:
-                _shown = [mo.md("*Ran with no output.*")]
-        if _key == "single_family":
-            _shown.append(mo.callout(DIRECTOR_QUESTIONS[0][1], kind="info") if director_button.value else director_button)
-        _code = ([mo.md(f"```python\n{cell_editors[_key].value}\n```")] if get_submitted()
-                 else [cell_editors[_key], cell_run_buttons[_key]])
-        _panels.append(mo.vstack([
-            mo.md(f"#### Code cell {_number} of {len(TASKS)}: {_cell['title']}\n\n*{_cell['hint']}*"),
-            *_code, *_shown,
-        ]))
-    mo.vstack(_panels, gap=1.5)
-    return
-
-
-@app.cell(hide_code=True)
-def observe_gate(get_prediction, mo, runs):
-    mo.stop(get_prediction() is None)
-    _waiting = [cell["title"] for key, cell in TASKS.items() if runs.get(key, 0) == 0]
-    (mo.callout(f"Run every code cell at least once to continue to Stage 3. Still to run: {', '.join(_waiting)}.",
-                kind="neutral") if _waiting else mo.md("*You've run every cell. Stage 3 is below.*"))
+def observe_gate(get_prediction, list_saved, mo):
+    mo.stop(get_prediction() is None or list_saved)
+    mo.Html("<div class='tc-doc'><p><i>Stage 3 opens when task 8 has saved my_list.</i></p></div>")
     return
 
 
@@ -1015,31 +1042,30 @@ def explain_fields(mo, set_explain):
 
 
 @app.cell
-def submit_action(get_explain, mo, set_final_settings, set_submitted, submit_button):
+def submit_action(get_explain, mo, namespace, set_final, set_submitted, submit_button):
     _ready = can_submit(get_explain())
     if submit_button.value and _ready:
-        set_final_settings({"my_list": None, "my_cutoff": None})
+        set_final(frozen_list(namespace))
         set_submitted(True)
-    submit_warning = (mo.callout("Answer all three questions before you submit.", kind="warn")
+    submit_warning = (mo.Html("<div class='tc-doc'><p><i>Answer all three questions before you submit.</i></p></div>")
                       if submit_button.value and not _ready else "")
     return (submit_warning,)
 
 
 @app.cell(hide_code=True)
-def explain(explain_fields, get_explain, get_prediction, get_submitted, mo, runs, submit_button, submit_warning):
-    mo.stop(not explain_unlocked(get_prediction(), runs))
+def explain(explain_fields, get_explain, get_prediction, get_submitted, list_saved, mo, submit_button, submit_warning):
+    mo.stop(get_prediction() is None or not (list_saved or get_submitted()))
     _header = [mo.Html(stage_header_html(3)), mo.Html(locked_prediction_html(get_prediction()))]
     if get_submitted():
         _answers = "".join(f"<p><b>{html.escape(q)}</b><br>{paragraph_html(get_explain()[f'r{i}'])}</p>"
                            for i, q in enumerate(EXPLAIN_PROMPTS, 1))
-        _output = mo.vstack(_header + [mo.Html(_answers),
-                                       mo.callout("Submitted. Your code, list settings and answers are locked.",
-                                                  kind="success")])
+        _output = mo.vstack(_header + [mo.Html(f"<div class='tc-doc'>{_answers}<p><i>Submitted. Your code, your "
+                                               "list and these answers are locked.</i></p></div>")])
     else:
         _questions = [item for i, q in enumerate(EXPLAIN_PROMPTS, 1)
                       for item in (mo.md(f"**{i}.** {q}"), explain_fields[f"r{i}"])]
         _output = mo.vstack(_header + _questions + [
-            mo.md("Submitting locks your code cells, your list settings and these answers, then shows your evaluation."),
+            mo.md("Submitting locks your code, your list and these answers, then shows your evaluation."),
             submit_button, submit_warning,
         ])
     _output
@@ -1047,18 +1073,18 @@ def explain(explain_fields, get_explain, get_prediction, get_submitted, mo, runs
 
 
 @app.cell(hide_code=True)
-def evaluate(get_explain, get_final_settings, get_prediction, get_submitted, mo, shared, slim):
+def evaluate(get_explain, get_final, get_prediction, get_submitted, mo, slim, tables):
     # One cell with the download: a separate cell would re-run (and fail) whenever the Explain answers change.
     mo.stop(not get_submitted())
-    _tables = shared["tables"]
-    _final = get_final_settings()
-    _evaluation = evaluation_html(slim, _tables["liens"], _tables["boundary"], _final["my_list"], _final["my_cutoff"],
+    _final = get_final()
+    _evaluation = evaluation_html(slim, tables["liens"], tables["boundary"], _final["my_list"], _final["my_cutoff"],
                                   get_prediction())
-    _doc = report_html(get_prediction(), {"rows": 0, "cutoff": 0.0}, get_explain(), _evaluation)
+    _doc = report_html(get_prediction(), list_summary(_final, tables["liens"]), get_explain(), _evaluation)
     mo.vstack([
-        mo.Html(stage_header_html(4)), mo.Html(_evaluation),
-        mo.md("### Download your brief\n\nThe file holds your prediction, your list settings, your reflection and "
-              "this evaluation. It opens in any browser; use **Print → Save as PDF** for a PDF."),
+        mo.Html(stage_header_html(4)), mo.Html(f"<div class='tc-doc'>{_evaluation}</div>"),
+        mo.Html("<div class='tc-doc'><h3 class='tc-task'>Download your brief</h3><p>The file holds your prediction, "
+                "your list, your reflection and this evaluation. It opens in any browser; use Print, then Save as "
+                "PDF, for a PDF.</p></div>"),
         mo.download(data=_doc.encode("utf-8"), filename="tricog_brief.html", mimetype="text/html",
                     label="Download brief (.html)"),
         mo.md("*Nothing is saved online. Refreshing or closing this page erases your work, so download before you leave.*"),
