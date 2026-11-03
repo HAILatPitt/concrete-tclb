@@ -1,3 +1,7 @@
-notes/
-
 data/*
+notes/
+.venv/
+__pycache__/
+__marimo__/
+.DS_Store
+.idea/
