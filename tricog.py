@@ -64,7 +64,7 @@ with app.setup:
         "Residential parcels in the area carry 25 use codes. Adding rowhouses and townhouses brings in 575 more "
         "homes with liens, two- to four-family homes 643, and vacant land 9,330.",
         "Among the single-family homes inside TriCOG, a left join keeps every home whether or not it has a "
-        "lien: 53,858 rows, 46,144 of them owing nothing. Cell 6 joins every home in the area, so it prints more. "
+        "lien: 53,858 rows, 46,144 of them owing nothing. Task 6's example joins every home in the area, so it prints more. "
         "The row-by-row loop finds the same liens as an inner join, far more slowly.",
         "A left join when combining keeps every parcel inside TriCOG by the map: 85,765 rows, of which 31,907 are not "
         "single-family homes and 46,144 are homes with no lien.",
@@ -126,102 +126,125 @@ with app.setup:
     """
 
     STDOUT_LIMIT = 5000
-    DIRECTOR_REPLY = (
-        "We mean single-family houses only: rows where CLASSDESC is RESIDENTIAL and USEDESC is SINGLE FAMILY. "
-        "Not rowhouses, townhouses, two- to four-family homes or vacant land. Our program can't take those on."
+    DIRECTOR_QUESTIONS = (
+        ("Do townhouses or rowhouses count as single-family homes?",
+         "We mean single-family houses only: rows where CLASSDESC is RESIDENTIAL and USEDESC is SINGLE FAMILY. "
+         "Not townhouses, rowhouses, two- to four-family homes or vacant land. Our program can't take those on."),
+        ("How many homes can we buy this year?",
+         "A few dozen, so the list has to be one we can trust."),
+        ("When do you need the list?",
+         "By the end of the month, so take the time to check it."),
+        ("Can we buy homes just outside our towns?",
+         "No. By law we can buy only inside our member municipalities."),
     )
-    STARTER_CELLS = {
-        "load": {
-            "title": "Load and look",
-            "hint": "Four tables are ready for you: assessments, liens, parcels and tricog. What does each one hold, "
-                    "and which of them can be drawn on a map?",
-            "code": textwrap.dedent("""\
+    TASKS = {
+        "files": {
+            "title": "Look at the files",
+            "director": "The analyst left you four tables. Before anything else, find out what is in each one.",
+            "hint": "Look at each table's size and first rows. Two of the tables can be drawn on a map. Find out "
+                    "which two, and what coordinate system each of them uses. Nothing needs saving here.",
+            "functions": "len(table), table.head(), table.columns, table.crs",
+            "example": textwrap.dedent("""\
                 tables = {"assessments": assessments, "liens": liens, "parcels": parcels, "tricog": tricog}
                 for name, table in tables.items():
-                    print(name, table.shape, "coordinate system:", getattr(table, "crs", "none (no shapes)"))
-                assessments.head()"""),
+                    print(name, table.shape, getattr(table, "crs", "no shapes"))"""),
+            "saves": (),
         },
         "names": {
-            "title": "Boundary by name",
-            "hint": "TriCOG has 30 member towns. Do all 30 names turn up in the assessments? Look at the towns "
-                    "that don't.",
-            "code": textwrap.dedent("""\
+            "title": "Try the quick way: match town names",
+            "director": "The assessments have a town column. Can you start by keeping the rows from our 30 towns?",
+            "hint": "Make both lists of town names look the same: upper case, with no spaces at the ends. Keep the "
+                    "assessment rows whose town is on TriCOG's list and save them as inside_by_name. To see where "
+                    "they are, pick out the parcels with the same IDs and draw them as dots.",
+            "functions": "series.str.upper(), series.str.strip(), series.isin(values), "
+                         "parcels[parcels['PIN'].isin(ids)], shapes.centroid.plot(markersize=1)",
+            "example": textwrap.dedent("""\
                 tricog_names = set(tricog["NAME"].str.upper())
                 town = assessments["MUNIDESC"].str.strip().str.upper()
-                matched = assessments[town.isin(tricog_names)]
-                print(len(tricog_names), "TriCOG towns,", matched["MUNIDESC"].nunique(), "town names matched")
-                matched["MUNIDESC"].value_counts()"""),
+                inside_by_name = assessments[town.isin(tricog_names)]
+                parcels[parcels["PIN"].isin(inside_by_name["PARID"])].centroid.plot(markersize=1)"""),
+            "saves": ("inside_by_name",),
         },
-        "crs": {
-            "title": "Line up the maps",
-            "hint": "Compare what cell 1 printed about each file. Once this clip works it takes about 10 seconds. "
-                    "Keep parcels as the first table: clipping TriCOG by every parcel can crash this page.",
-            "code": textwrap.dedent("""\
-                inside = gp.clip(parcels, tricog)
-                print(len(inside), "parcels inside TriCOG")
-                inside"""),
+        "map": {
+            "title": "Use the map instead",
+            "director": "Try the map as well. TriCOG's boundary file shows exactly where our towns are.",
+            "hint": "Keep the parcels whose shapes fall inside TriCOG's boundary and save them as inside_tricog. "
+                    "Check how many you got, then draw them as dots. Keep parcels as the first table: clipping "
+                    "TriCOG by every parcel can crash this page.",
+            "functions": "gp.clip(shapes, mask), shapes.to_crs(other.crs), len(table), shapes.centroid.plot(markersize=1)",
+            "example": textwrap.dedent("""\
+                inside_tricog = gp.clip(parcels, tricog)
+                len(inside_tricog)"""),
+            "saves": ("inside_tricog",),
         },
         "clip": {
-            "title": "Boundary by map",
-            "hint": "This cell tries the clip on a small square of parcels around Braddock. What kind of rows "
-                    "come back?",
-            "code": textwrap.dedent("""\
-                sample = parcels.cx[1_376_000:1_380_000, 394_000:398_000]
+            "title": "Check what the clip gives back",
+            "director": "Before you trust the clip, try it on a small area and look closely at the rows it returns.",
+            "hint": "The box starts with sample, a small square of parcels around Braddock. Clip one layer with "
+                    "the other and look at what kind of rows come back.",
+            "functions": "gp.clip(shapes, mask), shapes.to_crs(other.crs), table.head()",
+            "starter": "sample = parcels.cx[1_376_000:1_380_000, 394_000:398_000]\n# Your code here",
+            "example": textwrap.dedent("""\
                 tricog_feet = tricog.to_crs(parcels.crs)
-                inside = gp.clip(tricog_feet, sample)
-                print(len(sample), "parcels in the sample,", len(inside), "rows inside TriCOG")
-                inside"""),
+                gp.clip(tricog_feet, sample)"""),
+            "saves": (),
         },
         "single_family": {
-            "title": "Single-family",
-            "hint": "What other kinds of home are in the data? Which column says whether a parcel is a home at all?",
-            "code": textwrap.dedent("""\
+            "title": "Keep the single-family homes",
+            "director": "We buy single-family homes. Find them in the assessments.",
+            "hint": "Look at the CLASSDESC and USEDESC columns in the table above. Keep the residential parcels "
+                    "used as single-family homes and save them as homes. If you aren't sure what counts, ask the "
+                    "director.",
+            "functions": "table[table['COLUMN'] == 'VALUE'], (condition_1) & (condition_2), series.value_counts()",
+            "example": textwrap.dedent("""\
                 homes = assessments[assessments["USEDESC"] == "SINGLE FAMILY"]
-                print(len(homes), "single-family homes")
-                homes[["PARID", "MUNIDESC", "CLASSDESC", "USEDESC"]]"""),
+                len(homes)"""),
+            "saves": ("homes",),
         },
         "liens": {
-            "title": "Joining liens",
-            "hint": "Compare the number of rows with the number of homes, and count the rows with no lien amount. "
-                    "Try how='right' too. pd.merge keeps only rows that match unless you say otherwise: "
-                    "how='inner' is the default.",
-            "code": textwrap.dedent("""\
-                homes = assessments[(assessments["CLASSDESC"] == "RESIDENTIAL") & (assessments["USEDESC"] == "SINGLE FAMILY")]
-
-                # One way: look up each home's lien, one home at a time (timed on 300 homes).
+            "title": "Attach the liens",
+            "director": "Now find out which of those homes have tax liens, and how much is owed.",
+            "hint": "Attach each home's lien amount from the liens table, matching the home's PARID to the lien's "
+                    "pin. Decide what should happen to homes that have no lien, and save the result as "
+                    "homes_with_liens. Count the rows before and after. You could also look homes up one at a "
+                    "time; time that on a few hundred homes first.",
+            "functions": "pd.merge(left, right, left_on=..., right_on=..., how=...), series.isna().sum(), time.time()",
+            "example": textwrap.dedent("""\
                 start = time.time()
                 for parid in homes["PARID"].head(300):
                     match = liens[liens["pin"] == parid]
-                seconds = time.time() - start
-                print(f"300 homes took {seconds:.1f} s; all {len(homes):,} would take about {seconds / 300 * len(homes):,.0f} s")
-
-                # A faster way: join the two tables.
-                with_liens = pd.merge(homes, liens, left_on="PARID", right_on="pin", how="left")
-                print(len(homes), "homes,", len(with_liens), "rows after the join")
-                with_liens[["PARID", "MUNIDESC", "pin", "total_amount"]]"""),
+                print(f"300 homes, one at a time: {time.time() - start:.1f} s")
+                homes_with_liens = pd.merge(homes, liens, left_on="PARID", right_on="pin", how="left")
+                len(homes), len(homes_with_liens)"""),
+            "saves": ("homes_with_liens",),
         },
         "combine": {
-            "title": "Combine",
-            "hint": "inside_tricog holds the parcels inside TriCOG by the map. Compare the count with your guess "
-                    "in Predict. Do all these rows meet all three rules?",
-            "code": textwrap.dedent("""\
-                homes = assessments[(assessments["CLASSDESC"] == "RESIDENTIAL") & (assessments["USEDESC"] == "SINGLE FAMILY")]
-                homes_with_liens = pd.merge(homes, liens, left_on="PARID", right_on="pin")
-                candidates = pd.merge(inside_tricog, homes_with_liens, on="PARID", how="left")
-                print(len(candidates), "candidates")
-                candidates[["PARID", "MUNIDESC", "USEDESC", "total_amount"]]"""),
+            "title": "Put the three rules together",
+            "director": "Combine your results into one list of homes that pass all three rules.",
+            "hint": "Join the parcels in inside_tricog to the homes in homes_with_liens on their parcel IDs and "
+                    "save the result as candidates. Then check whether every row passes all three rules.",
+            "functions": "pd.merge(left, right, left_on=..., right_on=..., how=...), table[['PIN']], len(table)",
+            "example": textwrap.dedent("""\
+                candidates = pd.merge(inside_tricog[["PIN"]], homes_with_liens, left_on="PIN", right_on="PARID", how="left")
+                len(candidates)"""),
+            "saves": ("candidates",),
         },
         "amounts": {
-            "title": "Lien amounts",
-            "hint": "How small is the smallest lien? What share of the candidates owe less than $1,000?",
-            "code": textwrap.dedent("""\
-                homes = assessments[(assessments["CLASSDESC"] == "RESIDENTIAL") & (assessments["USEDESC"] == "SINGLE FAMILY")]
-                homes_with_liens = pd.merge(homes, liens, left_on="PARID", right_on="pin")
-                candidates = pd.merge(inside_tricog, homes_with_liens, on="PARID")
-                print(len(candidates), "candidates")
-                candidates["total_amount"].describe()"""),
+            "title": "Decide which liens count",
+            "director": "Some liens are tiny. Decide how much a home must owe before we treat it as abandoned.",
+            "hint": "Look at the spread of lien amounts above. Choose a cutoff and save it as my_cutoff. Keep the "
+                    "candidates whose lien is above it and save them as my_list. Draw your list as dots to see "
+                    "where the homes are.",
+            "functions": "table[table['total_amount'] > number], series.describe(), shapes.centroid.plot(markersize=1)",
+            "example": textwrap.dedent("""\
+                my_cutoff = 0
+                my_list = candidates[candidates["total_amount"] > my_cutoff]
+                len(my_list)"""),
+            "saves": ("my_cutoff", "my_list"),
         },
     }
+    for _task in TASKS.values():
+        _task.setdefault("starter", "# Your code here")
 
 
 @app.function
@@ -456,8 +479,42 @@ def run_code(code: str, namespace: dict) -> dict:
 
 
 @app.function
+def task_preview(key: str, tables: dict):
+    """What the learner sees before writing code, built only from the prepared tables (never the answer)."""
+    assessments, liens, parcels, tricog = (tables[name] for name in ("assessments", "liens", "parcels", "tricog"))
+    if key == "files":
+        return pd.DataFrame([{"table": name, "rows": len(t), "columns": t.shape[1],
+                              "coordinate system": str(getattr(t, "crs", "no shapes"))}
+                             for name, t in (("assessments", assessments), ("liens", liens),
+                                             ("parcels", parcels), ("tricog", tricog))])
+    if key == "names":
+        towns = assessments["MUNIDESC"].value_counts().rename_axis("Town in the assessments").reset_index(name="Rows")
+        names = pd.Series(sorted(tricog["NAME"]), name="TriCOG's list")
+        return pd.concat([names, towns], axis=1).fillna("")
+    if key == "map":
+        return pd.DataFrame([{"table": name, "coordinate system": str(t.crs),
+                              "x from": round(t.total_bounds[0], 2), "x to": round(t.total_bounds[2], 2),
+                              "y from": round(t.total_bounds[1], 2), "y to": round(t.total_bounds[3], 2)}
+                             for name, t in (("parcels", parcels), ("tricog", tricog))])
+    if key == "clip":
+        sample = parcels.cx[1_376_000:1_380_000, 394_000:398_000]
+        return f"The sample holds {len(sample):,} parcels in a small square around Braddock."
+    if key == "single_family":
+        return assessments.groupby(["CLASSDESC", "USEDESC"]).size().rename("Rows").reset_index().sort_values(
+            "Rows", ascending=False).head(40)
+    if key == "liens":
+        return liens.head(20)
+    if key == "combine":
+        return ("So far you have saved inside_tricog (task 3), homes (task 5) and homes_with_liens (task 6). "
+                "Print the length of each before you combine them.")
+    single_family = assessments[(assessments["CLASSDESC"] == "RESIDENTIAL") & (assessments["USEDESC"] == "SINGLE FAMILY")]
+    owed = single_family.merge(liens, left_on="PARID", right_on="pin")["total_amount"]
+    return owed.describe().rename("Liens on single-family homes in the area").to_frame()
+
+
+@app.function
 def explain_unlocked(prediction, runs: dict) -> bool:
-    return prediction is not None and all(runs.get(key, 0) >= 1 for key in STARTER_CELLS)
+    return prediction is not None and all(runs.get(key, 0) >= 1 for key in TASKS)
 
 
 @app.function
@@ -830,11 +887,11 @@ def cell_controls(mo):
     # Created once here, so re-running the cell that shows them never wipes the learner's code. The editors sit
     # in a plain dict, so a keystroke re-runs nothing; a Run click reads the code straight from the editor.
     cell_editors = {
-        key: mo.ui.code_editor(value=cell["code"], language="python", min_height=100)
-        for key, cell in STARTER_CELLS.items()
+        key: mo.ui.code_editor(value=cell["starter"], language="python", min_height=100)
+        for key, cell in TASKS.items()
     }
     cell_run_buttons = mo.ui.dictionary({
-        key: mo.ui.button(value=0, on_click=lambda count: count + 1, label="Run") for key in STARTER_CELLS
+        key: mo.ui.button(value=0, on_click=lambda count: count + 1, label="Run") for key in TASKS
     })
     director_button = mo.ui.button(value=0, on_click=lambda count: count + 1, label="Ask the director")
     reload_button = mo.ui.button(value=0, on_click=lambda count: count + 1, label="Reload the data")
@@ -878,7 +935,7 @@ def observe_intro(get_prediction, mo, reload_button):
 def observe_cells(cell_editors, cell_outputs, cell_run_buttons, director_button, get_prediction, get_submitted, mo):
     mo.stop(get_prediction() is None)
     _panels = []
-    for _number, (_key, _cell) in enumerate(STARTER_CELLS.items(), 1):
+    for _number, (_key, _cell) in enumerate(TASKS.items(), 1):
         _result = cell_outputs.get(_key)
         _shown = [mo.md("*Not run yet.*")]
         if _result is not None:
@@ -898,11 +955,11 @@ def observe_cells(cell_editors, cell_outputs, cell_run_buttons, director_button,
             if not _shown:
                 _shown = [mo.md("*Ran with no output.*")]
         if _key == "single_family":
-            _shown.append(mo.callout(DIRECTOR_REPLY, kind="info") if director_button.value else director_button)
+            _shown.append(mo.callout(DIRECTOR_QUESTIONS[0][1], kind="info") if director_button.value else director_button)
         _code = ([mo.md(f"```python\n{cell_editors[_key].value}\n```")] if get_submitted()
                  else [cell_editors[_key], cell_run_buttons[_key]])
         _panels.append(mo.vstack([
-            mo.md(f"#### Code cell {_number} of {len(STARTER_CELLS)}: {_cell['title']}\n\n*{_cell['hint']}*"),
+            mo.md(f"#### Code cell {_number} of {len(TASKS)}: {_cell['title']}\n\n*{_cell['hint']}*"),
             *_code, *_shown,
         ]))
     mo.vstack(_panels, gap=1.5)
@@ -952,7 +1009,7 @@ def build_your_list(boundary_control, combine_control, cutoff_control, get_final
 @app.cell(hide_code=True)
 def observe_gate(get_prediction, mo, runs):
     mo.stop(get_prediction() is None)
-    _waiting = [cell["title"] for key, cell in STARTER_CELLS.items() if runs.get(key, 0) == 0]
+    _waiting = [cell["title"] for key, cell in TASKS.items() if runs.get(key, 0) == 0]
     (mo.callout(f"Run every code cell at least once to continue to Stage 3. Still to run: {', '.join(_waiting)}.",
                 kind="neutral") if _waiting else mo.md("*You've run every cell. Stage 3 is below.*"))
     return
