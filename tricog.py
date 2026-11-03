@@ -787,7 +787,8 @@ def list_differences(ids, slim, liens, boundary, cutoff: float) -> dict:
     # Border homes recorded under a non-member town count as missed by name only when the list has none of them.
     listed_munidesc = records.loc[records.index.isin(listed), "MUNIDESC"].dropna().map(town_name).str.upper()
     border_listed = bool((~listed_munidesc.isin(MEMBER_TOWNS)).any())
-    border = ~towns.isin(MEMBER_TOWNS) & ~border_listed
+    # ...and only when a ward town is missing too, the pattern name matching leaves.
+    border = ~towns.isin(MEMBER_TOWNS) & ~border_listed & bool(ward.any())
     empty = listed.size == 0
     return {
         **reasons,
@@ -805,6 +806,11 @@ def list_differences(ids, slim, liens, boundary, cutoff: float) -> dict:
 @app.function
 def plural(count: int, word: str, words=None) -> str:
     return f"{count:,} {word if count == 1 else (words or word + 's')}"
+
+
+@app.function
+def verb(count: int, one: str, many: str) -> str:
+    return one if count == 1 else many
 
 
 @app.function
@@ -830,6 +836,13 @@ def home_type_groups(home_types: dict) -> dict:
 
 
 @app.function
+def home_groups_text(groups: dict) -> str:
+    singular = {"rowhouses and townhouses": "rowhouse or townhouse", "two- to four-family homes": "two- to four-family home",
+                "vacant lots": "vacant lot", "other home types": "other home type"}
+    return ", ".join(plural(count, singular[label], label) for label, count in groups.items())
+
+
+@app.function
 def names_status(diff: dict) -> str:
     ward, border = diff["ward_towns"], diff["border_towns"]
     parts = [counts_text(ward, lambda name: "in " + town_label(name))] if ward else []
@@ -840,11 +853,13 @@ def names_status(diff: dict) -> str:
 
 @app.function
 def cutoff_status(diff: dict, cutoff: float, card: dict) -> str:
-    text = (f"Your choice: {money(cutoff)}. On the correct list at that cutoff, {card['under_1000']:,} homes owe "
-            f"under $1,000 and {card['removed']:,} homes with liens are removed.")
-    if diff["below_cutoff"]:
-        text += (f" {plural(diff['below_cutoff'], 'home')} on your list owe {money(cutoff)} or less, which your "
-                 "own rule meant to leave out.")
+    under, removed, below = card["under_1000"], card["removed"], diff["below_cutoff"]
+    text = (f"Your choice: {money(cutoff)}. On the correct list at that cutoff, {plural(under, 'home')} "
+            f"{verb(under, 'owes', 'owe')} under $1,000 and {plural(removed, 'home with a lien', 'homes with liens')} "
+            f"{verb(removed, 'is', 'are')} removed.")
+    if below:
+        text += (f" {plural(below, 'home')} on your list {verb(below, 'owes', 'owe')} {money(cutoff)} or less, "
+                 "which your own rule meant to leave out.")
     return text
 
 
@@ -858,9 +873,10 @@ def trap_status(key: str, diff: dict) -> tuple:
     if key == "types" and diff["home_types"]:
         total = sum(diff["home_types"].values())
         return (f"Yes: {plural(total, 'parcel')} on your list: "
-                f"{counts_text(home_type_groups(diff['home_types']), lambda label: label)}"), True
+                f"{home_groups_text(home_type_groups(diff['home_types']))}"), True
     if key == "no_lien" and diff["no_lien"]:
-        return f"Yes: {plural(diff['no_lien'], 'home')} on your list owe nothing.", True
+        return (f"Yes: {plural(diff['no_lien'], 'home')} on your list {verb(diff['no_lien'], 'owes', 'owe')} "
+                "nothing."), True
     return NOT_IN_LIST, False
 
 
@@ -920,7 +936,8 @@ def comparison_html(diff: dict, row_count: int, guess: str, cutoff: float, note:
     ))
     no_id = row_count - diff["listed"] - diff["duplicates"]
     rows_line = ("" if row_count == diff["listed"] else
-                 f"<p>Your list has {row_count:,} rows: {diff['duplicates']:,} repeat a parcel and {no_id:,} have "
+                 f"<p>Your list has {row_count:,} rows: {diff['duplicates']:,} "
+                 f"{verb(diff['duplicates'], 'repeats', 'repeat')} a parcel and {no_id:,} {verb(no_id, 'has', 'have')} "
                  "no parcel ID.</p>")
     guess_line = (f"In Predict you guessed {guess} homes. Your list has {plural(diff['listed'], 'parcel')}, in the "
                   f"{count_bucket(diff['listed'])} range. Part 2 shows where the differences come from, and the "
@@ -972,7 +989,8 @@ def evaluation_html(slim, liens, boundary, my_list, my_cutoff, prediction: dict)
 @app.function
 def list_evaluation_html(slim, liens, boundary, my_list, my_cutoff, prediction: dict) -> str:
     ids = list_ids(my_list)
-    if ids is None:
+    # Rows that all lack an ID can't be compared; only a list with no rows at all counts as empty.
+    if ids is None or (ids.empty and len(my_list)):
         return unreadable_list_html(my_list, my_cutoff, prediction)
     cutoff, note = resolve_cutoff(my_cutoff, ids, liens)
     diff = list_differences(ids, slim, liens, boundary, cutoff)
