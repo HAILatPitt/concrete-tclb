@@ -76,8 +76,106 @@ with app.setup:
         "the liens file covers the whole county.",
         "58 homes on the list sit partly outside TriCOG's border. The clip keeps the part inside.",
     )
+    # What each trap does to a list built at the reference settings, from answer_key.json (CONCRETE/docs/tclb_poee).
+    TRAP_NUMBERS = {
+        "names_missed": 2351,
+        "extra_rowhouse_townhouse": 575,
+        "extra_two_to_four": 643,
+        "extra_vacant_land": 9330,
+        "liens_left_no_lien": 46144,
+        "under_100": 420,
+        "under_1000": 3126,
+        "median_lien": 1479.46,
+        "reversed_sample_rows": 5,
+    }
+    # One row per trap in Evaluate. Designed traps come first, in task order; the last four appear only when a
+    # list has some.
+    TRAPS = {
+        "names": {
+            "title": "Matching town names", "task": 2,
+            "what": "McKeesport and Clairton records are split into wards (\"1st Ward - McKEESPORT\"), and some "
+                    "border homes are recorded under a neighbouring town, so their names never match TriCOG's list.",
+            "fall_in": f"{TRAP_NUMBERS['names_missed']:,} homes missed",
+            "costs": "TriCOG never looks at empty houses in two of its own towns.",
+            "households": "Eligible empty houses in those towns stay empty, and the program's effort shifts elsewhere.",
+        },
+        "crs": {
+            "title": "Two coordinate systems", "task": 3,
+            "what": "Parcels are in feet and TriCOG is in longitude and latitude. Clipping one by the other returns "
+                    "0 rows, with only a warning.",
+            "fall_in": "Every home: the list comes out empty",
+            "costs": "No list to send, or days spent finding out why.",
+            "households": "No empty house gets looked at this year.",
+        },
+        "reversed": {
+            "title": "Clipping the wrong way round", "task": 4,
+            "what": f"gp.clip returns rows of the table you pass first. With TriCOG first, the Braddock sample gives "
+                    f"back {TRAP_NUMBERS['reversed_sample_rows']} town shapes, not parcels.",
+            "fall_in": "No homes at all: the list holds towns",
+            "costs": "Nothing on the list can be sent a letter.",
+            "households": "No empty house gets looked at this year.",
+        },
+        "types": {
+            "title": "Home types", "task": 5,
+            "what": "Residential parcels carry 25 use codes. The director counts only single-family homes, not "
+                    "townhouses.",
+            "fall_in": f"{TRAP_NUMBERS['extra_rowhouse_townhouse']:,} rowhouses and townhouses, "
+                       f"{TRAP_NUMBERS['extra_two_to_four']:,} two- to four-family homes, "
+                       f"{TRAP_NUMBERS['extra_vacant_land']:,} vacant lots",
+            "costs": "Offers go out on property the program can't use.",
+            "households": "In two- to four-family homes, tenants could lose their homes.",
+        },
+        "no_lien": {
+            "title": "Homes that owe nothing", "task": 6,
+            "what": "A left join keeps every home, whether or not it has a lien.",
+            "fall_in": f"{TRAP_NUMBERS['liens_left_no_lien']:,} extra homes",
+            "costs": "Staff time goes on homes that aren't behind on anything.",
+            "households": "Letters suggesting their home could be taken reach people who owe nothing.",
+        },
+        "cutoff": {
+            "title": "Your lien cutoff", "task": 8,
+            "what": "No column says whether a home is abandoned. A lien is only a clue, and a small debt is a weak one.",
+            "fall_in": f"At $0: {TRAP_NUMBERS['under_100']:,} homes owe under $100, {TRAP_NUMBERS['under_1000']:,} "
+                       f"under $1,000. Half owe less than ${TRAP_NUMBERS['median_lien']:,.2f}.",
+            "costs": "Set it high and abandoned homes drop off the list.",
+            "households": "Set it low and letters reach families still living there over a small debt.",
+        },
+        "outside": {
+            "title": "Parcels outside TriCOG", "task": None,
+            "what": "Parcels on your list that lie outside TriCOG's member municipalities.",
+            "fall_in": "n/a",
+            "costs": "By law the land bank can't buy them.",
+            "households": "Staff time goes into homes TriCOG can never take on.",
+        },
+        "not_home": {
+            "title": "Parcels that aren't homes", "task": None,
+            "what": "Parcels whose class isn't residential, such as shops, municipal buildings and commercial land. "
+                    "A left join when combining in task 7 brings them in.",
+            "fall_in": "n/a",
+            "costs": "Offers go out on property the program can't use.",
+            "households": "Letters reach owners the program was never meant for.",
+        },
+        "duplicates": {
+            "title": "The same parcel more than once", "task": None,
+            "what": "The same parcel appears more than once.",
+            "fall_in": "n/a",
+            "costs": "Staff work the same home twice.",
+            "households": "The same household could be written to twice.",
+        },
+        "other": {
+            "title": "Other homes missing", "task": None,
+            "what": "Homes that meet every rule at your cutoff but aren't on your list.",
+            "fall_in": "n/a",
+            "costs": "Homes that meet every rule aren't considered.",
+            "households": "If they are empty, they stay empty.",
+        },
+    }
+    DESIGNED_TRAPS = ("names", "crs", "reversed", "types", "no_lien")
+    EXTRA_TRAPS = ("outside", "not_home", "duplicates", "other")
+    NOT_IN_LIST = "Not in your final list"
+    CANT_TELL = "Can't tell: your list has no parcel IDs."
 
-    STAGES = ("Predict", "Observe", "Explain", "Evaluate")
+    STAGES =("Predict", "Observe", "Explain", "Evaluate")
     OPENING_CARDS = {
         "story": {
             "title": "The story so far",
@@ -738,6 +836,81 @@ def list_differences(ids, slim, liens, boundary, cutoff: float) -> dict:
         "listed": int(listed.size),
         "reference": len(reference),
     }
+
+
+@app.function
+def plural(count: int, word: str, words=None) -> str:
+    return f"{count:,} {word if count == 1 else (words or word + 's')}"
+
+
+@app.function
+def money(value: float) -> str:
+    value = float(value)
+    return f"${value:,.0f}" if value == round(value) else f"${value:,.2f}"
+
+
+@app.function
+def names_status(diff: dict) -> str:
+    ward, border = diff["ward_towns"], diff["border_towns"]
+    parts = [counts_text(ward, lambda name: "in " + town_label(name))] if ward else []
+    if border:
+        parts.append(plural(border, "home") + " recorded under neighbouring towns")
+    return f"Yes: {plural(sum(ward.values()) + border, 'home')} missed ({', '.join(parts)})"
+
+
+@app.function
+def cutoff_status(diff: dict, cutoff: float, card: dict) -> str:
+    text = (f"Your choice: {money(cutoff)}. On the correct list at that cutoff, {card['under_1000']:,} homes owe "
+            f"under $1,000 and {card['removed']:,} homes with liens are removed.")
+    if diff["below_cutoff"]:
+        text += (f" {plural(diff['below_cutoff'], 'home')} on your list owe {money(cutoff)} or less, which your "
+                 "own rule meant to leave out.")
+    return text
+
+
+@app.function
+def trap_status(key: str, diff: dict) -> tuple:
+    """A designed trap's status, read from the list alone: (text, whether it shows in the list)."""
+    if key == "names" and (diff["ward_towns"] or diff["border_towns"]):
+        return names_status(diff), True
+    if key == "crs" and diff["empty"]:
+        return f"Yes: your list is empty, so all {diff['reference']:,} correct homes are missing.", True
+    if key == "types" and diff["home_types"]:
+        total = sum(diff["home_types"].values())
+        return (f"Yes: {plural(total, 'parcel')} on your list: "
+                f"{counts_text(diff['home_types'], lambda kind: kind.lower())}"), True
+    if key == "no_lien" and diff["no_lien"]:
+        return f"Yes: {plural(diff['no_lien'], 'home')} on your list owe nothing.", True
+    return NOT_IN_LIST, False
+
+
+@app.function
+def extra_status(key: str, diff: dict) -> str:
+    words = {"outside": "parcel", "not_home": "parcel", "duplicates": "extra row", "other": "home"}
+    return f"Yes: {plural(diff[key], words[key])}"
+
+
+@app.function
+def trap_row(key: str, status: str, in_list: bool) -> dict:
+    return {"key": key, **TRAPS[key], "status": status, "in_list": in_list}
+
+
+@app.function
+def trap_rows(diff: dict, cutoff: float, card: dict) -> list:
+    """Designed traps in the list, then the cutoff, then extras the list has, then designed traps it doesn't."""
+    designed = [trap_row(key, *trap_status(key, diff)) for key in DESIGNED_TRAPS]
+    extras = [trap_row(key, extra_status(key, diff), True) for key in EXTRA_TRAPS if diff[key]]
+    cutoff_row = trap_row("cutoff", cutoff_status(diff, cutoff, card), True)
+    return ([row for row in designed if row["in_list"]] + [cutoff_row] + extras
+            + [row for row in designed if not row["in_list"]])
+
+
+@app.function
+def unreadable_rows(cutoff) -> list:
+    status = {"reversed": "Possibly: a list of town shapes has no parcel IDs."}
+    if cutoff is not None:
+        status["cutoff"] = f"Your choice: {money(cutoff)}."
+    return [trap_row(key, status.get(key, CANT_TELL), False) for key in (*DESIGNED_TRAPS, "cutoff")]
 
 
 @app.function
