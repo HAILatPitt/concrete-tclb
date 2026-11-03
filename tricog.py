@@ -49,33 +49,6 @@ with app.setup:
         "WHITE OAK", "WILKINS",
     )
     COUNT_BUCKETS = ("under 500", "500 to 5,000", "5,000 to 50,000", "more than 50,000")
-    # Counts that don't depend on the student's settings, from the prepared snapshot (CONCRETE/docs/tclb_poee).
-    MISMATCHED_CLIP_ROWS = 0
-    REVERSED_CLIP_ROWS = 5
-    HIDDEN_FACTS = (
-        "The county's assessment file has 584,139 rows; you worked with the 171,425 around TriCOG. Only the "
-        "parcels and TriCOG files carry shapes, and they arrive in different coordinate systems: feet for the "
-        "parcels, longitude and latitude for TriCOG.",
-        "Matching town names misses McKeesport and Clairton, whose assessment records are split into wards "
-        "(\"1st Ward - McKEESPORT\"). That drops 2,351 homes from the list. Codes don't rescue it: the Census, "
-        "the county and the wards each number McKeesport differently.",
-        "With feet on one side and degrees on the other, the two maps don't overlap, so the clip returns 0 rows. "
-        "geopandas prints a warning, and the cell still runs without an error.",
-        "gp.clip returns rows of the table you pass first. With TriCOG first, the sample gives back 5 town "
-        "shapes, not parcels.",
-        "Residential parcels in the area carry 25 use codes. Adding rowhouses and townhouses brings in 575 more "
-        "homes with liens, two- to four-family homes 643, and vacant land 9,330.",
-        "Among the single-family homes inside TriCOG, a left join keeps every home whether or not it has a "
-        "lien: 53,858 rows, 46,144 of them owing nothing. Task 6's example joins every home in the area, so it prints more. "
-        "The row-by-row loop finds the same liens as an inner join, far more slowly.",
-        "A left join when combining keeps every parcel inside TriCOG by the map: 85,765 rows, of which 31,907 are not "
-        "single-family homes and 46,144 are homes with no lien.",
-        "Half the homes on the list owe less than $1,479.46. 420 owe under $100 and 3,126 owe under $1,000.",
-        "The parcels file repeats 468 parcel IDs. None of the repeats reach the list.",
-        "6,702 liens match no parcel anywhere in the county, and 50,931 match no parcel in your area, because "
-        "the liens file covers the whole county.",
-        "58 homes on the list sit partly outside TriCOG's border. The clip keeps the part inside.",
-    )
     # What each trap does to a list built at the reference settings, from answer_key.json (CONCRETE/docs/tclb_poee).
     TRAP_NUMBERS = {
         "names_missed": 2351,
@@ -108,7 +81,7 @@ with app.setup:
             "households": "No empty house gets looked at this year.",
         },
         "reversed": {
-            "title": "Clipping the wrong way round", "task": 4,
+            "title": "Clipping with the tables swapped", "task": 4,
             "what": f"gp.clip returns rows of the table you pass first. With TriCOG first, the Braddock sample gives "
                     f"back {TRAP_NUMBERS['reversed_sample_rows']} town shapes, not parcels.",
             "fall_in": "No homes at all: the list holds towns",
@@ -249,11 +222,16 @@ with app.setup:
     .tc-task{color:#003594;font-size:18px;font-weight:700;margin:22px 0 4px}
     .tc-sub{font-size:15px;font-weight:700;margin:14px 0 4px}
     .tc-card{margin:16px 0}
-    .tc-card h4,.tc-eval h4{color:#003594;font-size:18px;font-weight:700;margin:0 0 4px}
+    .tc-card h4{color:#003594;font-size:18px;font-weight:700;margin:0 0 4px}
     .tc-h3{color:#003594;font-size:18px;font-weight:700;margin:24px 0 6px}
-    .tc-eval{border-top:1px solid #ccc;padding-top:8px;margin:14px 0}
-    .tc-eval dt{font-weight:700;margin-top:6px}
-    .tc-eval dd{margin:0 0 4px 0}
+    .tc-counts{border-collapse:collapse;margin:8px 0}
+    .tc-counts td{padding:3px 28px 3px 0;border-bottom:1px solid #e3e3e3}
+    .tc-counts td.num{text-align:right}
+    .tc-scroll{overflow-x:auto;max-width:100%}
+    .tc-traps{border-collapse:collapse;width:100%;min-width:760px;font-size:14px}
+    .tc-traps th,.tc-traps td{border-bottom:1px solid #ddd;padding:8px 10px 8px 0;text-align:left;vertical-align:top}
+    .tc-traps th{color:#003594}
+    .tc-traps .tc-task-no{color:#666}
     .tc-list{list-style:disc;padding-left:1.5em}
     ol.tc-list{list-style:decimal}
     .tc-list li{margin:4px 0}
@@ -659,19 +637,6 @@ def count_bucket(count: int) -> str:
 
 
 @app.function
-def checking_numbers(slim, your_count: int, guess: str) -> dict:
-    single_family = (slim["CLASSDESC"] == "RESIDENTIAL") & slim["USEDESC"].isin(REFERENCE_SETTINGS["types"])
-    return {
-        "mismatched_clip_rows": MISMATCHED_CLIP_ROWS,
-        "reversed_clip_rows": REVERSED_CLIP_ROWS,
-        "single_family_in_area": int(single_family.sum()),
-        "your_count": your_count,
-        "your_bucket": count_bucket(your_count),
-        "guess": guess,
-    }
-
-
-@app.function
 def with_entry(mapping: dict, name: str, value) -> dict:
     return {**mapping, name: value}
 
@@ -744,12 +709,6 @@ def town_label(name: str) -> str:
 @app.function
 def counts_text(counts: dict, label) -> str:
     return ", ".join(f"{count:,} {label(name)}" for name, count in counts.items())
-
-
-@app.function
-def eval_card_html(card_id: str, title: str, rows: tuple) -> str:
-    items = "".join(f"<dt>{html.escape(label)}</dt><dd>{html.escape(text)}</dd>" for label, text in rows)
-    return f'<div class="tc-eval" data-card="{card_id}"><h4>{html.escape(title)}</h4><dl>{items}</dl></div>'
 
 
 @app.function
@@ -914,115 +873,69 @@ def unreadable_rows(cutoff) -> list:
 
 
 @app.function
-def reason_cards_html(diff: dict) -> str:
-    cards = []
-    if diff["outside"]:
-        cards.append(eval_card_html("outside", "Parcels outside TriCOG", (
-            ("The count", f"{diff['outside']:,} parcels on your list are outside TriCOG's member municipalities."),
-            ("What happens", "By law the land bank can't buy them, so staff time goes into homes it can never take on."),
-        )))
-    kinds = {**diff["home_types"], **({"not a home": diff["not_home"]} if diff["not_home"] else {})}
-    if kinds:
-        total = sum(kinds.values())
-        multi = sum(count for kind, count in kinds.items() if kind in MULTI_FAMILY)
-        happens = "TriCOG makes offers on property its program can't use."
-        if multi:
-            happens += f" {multi:,} are two- to four-family homes, where tenants could lose their homes."
-        cards.append(eval_card_html("not_single_family", "Parcels that aren't single-family homes", (
-            ("The count", f"{total:,} parcels on your list: "
-                          f"{counts_text(kinds, lambda kind: kind.lower())}."),
-            ("What happens", happens),
-        )))
-    if diff["no_lien"]:
-        cards.append(eval_card_html("no_lien", "Homes with no lien", (
-            ("The count", f"{diff['no_lien']:,} homes on your list owe nothing."),
-            ("What happens", "Letters suggesting their home could be taken go to households that owe nothing."),
-        )))
-    if diff["below_cutoff"]:
-        cards.append(eval_card_html("below_cutoff", "Homes under your own cutoff", (
-            ("The count", f"{diff['below_cutoff']:,} homes on your list owe no more than the cutoff you saved."),
-            ("What happens", "Your list includes homes your own rule meant to leave out."),
-        )))
-    if diff["duplicates"]:
-        cards.append(eval_card_html("duplicates", "The same parcel more than once", (
-            ("The count", f"{diff['duplicates']:,} extra rows repeat a parcel already on your list."),
-            ("What happens", "The same household could be visited or written to twice."),
-        )))
-    if diff["ward_towns"]:
-        missed = sum(diff["ward_towns"].values())
-        cards.append(eval_card_html("ward_towns", "Homes missing from McKeesport and Clairton", (
-            ("The count", f"{missed:,} homes are missing: "
-                          f"{counts_text(diff['ward_towns'], lambda name: 'in ' + town_label(name))}."),
-            ("Why", "Their assessment records are split into wards, so the town names never match TriCOG's list."),
-            ("What happens", "Eligible empty houses in those towns are never considered, and TriCOG's effort "
-                             "shifts away from them."),
-        )))
-    if diff["other"]:
-        cards.append(eval_card_html("other", "Other homes missing from your list", (
-            ("The count", f"{diff['other']:,} homes that meet every rule at your cutoff aren't on your list."),
-            ("What happens", "If they are empty, they stay empty."),
-        )))
-    return "".join(cards)
+def counts_table_html(rows: tuple) -> str:
+    cells = "".join(f"<tr><td>{html.escape(label)}</td><td class='num'>{count:,}</td></tr>" for label, count in rows)
+    return f"<table class='tc-counts'>{cells}</table>"
 
 
 @app.function
-def small_debts_text(card: dict) -> str:
-    if not card["under_1000"]:
-        return ("No home on the list at your cutoff owes under $1,000, so the letters least supported by the "
-                "evidence are gone. The removed homes below are the other side of that choice.")
-    return (f"On the list at your cutoff, {card['under_100']:,} homes owe under $100 and {card['under_1000']:,} owe "
-            "under $1,000. A small debt is weak evidence of abandonment, so these are the letters most likely to "
-            "reach families still living there.")
-
-
-@app.function
-def removed_text(removed: int) -> str:
-    if not removed:
-        return "None. Every home with a lien stays on your list, including the smallest debts above."
-    return f"{removed:,} homes with a lien. If any of them are abandoned, they stay empty."
-
-
-@app.function
-def cutoff_card_html(card: dict, cutoff: float) -> str:
-    return eval_card_html("cutoff", "Your lien cutoff", (
-        ("What you chose", f"Keep homes whose liens total more than ${cutoff:,.0f}."),
-        ("What the data can't say", "No column says whether a home is abandoned or lived in, so a lien is only "
-                                    "a clue."),
-        ("Small debts", small_debts_text(card)),
-        ("Homes your cutoff removed", removed_text(card["removed"])),
+def comparison_html(diff: dict, row_count: int, guess: str, cutoff: float, note: str) -> str:
+    """Part 1: the learner's list against the correct one, in distinct parcels."""
+    only_yours = (diff["outside"] + diff["not_home"] + sum(diff["home_types"].values()) + diff["no_lien"]
+                  + diff["below_cutoff"])
+    only_correct = diff["reference"] if diff["empty"] else (
+        sum(diff["ward_towns"].values()) + diff["border_towns"] + diff["other"])
+    intro = ("TriCOG will send letters to the homes on your list and send staff to look at them. The correct list "
+             "is what TriCOG's three rules give when they are applied to the data without slips: inside a member "
+             f"town, a single-family home, and liens totalling more than your cutoff. It uses your own cutoff of "
+             f"{money(cutoff)}, so any difference comes from how the list was built. Each home that is on only one "
+             "of the two lists is a real household: a letter that shouldn't go out, or an empty house nobody visits.")
+    counts = counts_table_html((
+        ("Parcels on your list", diff["listed"]),
+        (f"Homes on the correct list at {money(cutoff)}", diff["reference"]),
+        ("On both lists", diff["listed"] - only_yours),
+        ("Only on yours: letters that shouldn't go out", only_yours),
+        ("Only on the correct list: empty houses nobody looks at", only_correct),
     ))
+    no_id = row_count - diff["listed"] - diff["duplicates"]
+    rows_line = ("" if row_count == diff["listed"] else
+                 f"<p>Your list has {row_count:,} rows: {diff['duplicates']:,} repeat a parcel and {no_id:,} have "
+                 "no parcel ID.</p>")
+    guess_line = (f"In Predict you guessed {guess} homes. Your list has {plural(diff['listed'], 'parcel')}, in the "
+                  f"{count_bucket(diff['listed'])} range. Part 2 shows where the differences come from, and the "
+                  "counts there add up to the two \"only\" lines above.")
+    note_html = f"<p>{html.escape(note)}</p>" if note else ""
+    return f"<p>{html.escape(intro)}</p>{note_html}{counts}{rows_line}<p>{html.escape(guess_line)}</p>"
 
 
 @app.function
-def checking_html(numbers: dict, reference_count) -> str:
-    bigger = (" Your list has more rows than that." if numbers["your_count"] > numbers["single_family_in_area"]
-              else "")
-    compare = ("" if reference_count is None else
-               f" The list that follows TriCOG's three rules at your cutoff has {reference_count:,}.")
-    items = (
-        f"Clipping across two coordinate systems returns {numbers['mismatched_clip_rows']} rows.",
-        f"Clipping TriCOG by the Braddock sample returns {numbers['reversed_clip_rows']} rows: towns, not parcels.",
-        f"The whole prepared area holds {numbers['single_family_in_area']:,} single-family homes, so a list "
-        f"larger than that can't be a list of homes.{bigger}",
-        f"You guessed {numbers['guess']}. Your list has {numbers['your_count']:,} rows ({numbers['your_bucket']})."
-        + compare,
-    )
-    return "<ul class='tc-list'>" + "".join(f"<li>{html.escape(item)}</li>" for item in items) + "</ul>"
+def trap_cell_html(row: dict) -> str:
+    task = f" <span class='tc-task-no'>· Task {row['task']}</span>" if row["task"] else ""
+    return f"<td><strong>{html.escape(row['title'])}</strong>{task}<br>{html.escape(row['what'])}</td>"
 
 
 @app.function
-def unreadable_list_html(slim, my_list, prediction: dict) -> str:
-    your_count = len(my_list) if isinstance(my_list, (pd.DataFrame, pd.Series)) else 0
-    numbers = checking_numbers(slim, your_count, prediction["bucket"])
-    return ("<p>Your my_list has no usable parcel-ID column (PARID, PIN or pin), so it can't be compared with the "
-            "correct list. Parts 2 and 3 still apply.</p><h3 class='tc-h3'>Part 2 · Numbers worth checking</h3>"
-            + checking_html(numbers, None) + hidden_facts_html())
+def trap_table_html(rows: list) -> str:
+    """Part 2: one row per trap, scrolling inside its own box so a narrow window keeps the page width."""
+    head = "".join(f"<th>{label}</th>" for label in (
+        "The trap", "If you fall in", "In your final list", "What it costs TriCOG", "What it means for households"))
+    body = "".join(
+        f"<tr data-trap='{row['key']}'>{trap_cell_html(row)}<td>{html.escape(row['fall_in'])}</td>"
+        + (f"<td><strong>{html.escape(row['status'])}</strong></td>" if row["in_list"]
+           else f"<td>{html.escape(row['status'])}</td>")
+        + f"<td>{html.escape(row['costs'])}</td><td>{html.escape(row['households'])}</td></tr>"
+        for row in rows)
+    return f'<div class="tc-scroll"><table class="tc-traps"><tr>{head}</tr>{body}</table></div>'
 
 
 @app.function
-def hidden_facts_html() -> str:
-    facts = "".join(f"<li>{html.escape(fact, quote=False)}</li>" for fact in HIDDEN_FACTS)
-    return f"<h3 class='tc-h3'>Part 3 · What the data was hiding</h3><ol class='tc-list'>{facts}</ol>"
+def unreadable_list_html(my_list, my_cutoff, prediction: dict) -> str:
+    row_count = len(my_list) if isinstance(my_list, (pd.DataFrame, pd.Series)) else 0
+    cutoff = float(my_cutoff) if is_number(my_cutoff) else None
+    intro = ("Your my_list has no usable parcel-ID column (PARID, PIN or pin), so it can't be compared with the "
+             f"correct list. It has {plural(row_count, 'row')}. In Predict you guessed {prediction['bucket']} homes.")
+    return (f"<h3 class='tc-h3'>Part 1 · Your list against the correct one</h3><p>{html.escape(intro)}</p>"
+            "<h3 class='tc-h3'>Part 2 · What this scenario was testing</h3>" + trap_table_html(unreadable_rows(cutoff)))
 
 
 @app.function
@@ -1032,27 +945,20 @@ def evaluation_html(slim, liens, boundary, my_list, my_cutoff, prediction: dict)
     try:
         return list_evaluation_html(slim, liens, boundary, my_list, my_cutoff, prediction)
     except Exception:
-        return unreadable_list_html(slim, my_list, prediction)
+        return unreadable_list_html(my_list, my_cutoff, prediction)
 
 
 @app.function
 def list_evaluation_html(slim, liens, boundary, my_list, my_cutoff, prediction: dict) -> str:
     ids = list_ids(my_list)
-    part_three = hidden_facts_html()
-    your_count = len(my_list) if isinstance(my_list, (pd.DataFrame, pd.Series)) else 0
     if ids is None:
-        return unreadable_list_html(slim, my_list, prediction)
+        return unreadable_list_html(my_list, my_cutoff, prediction)
     cutoff, note = resolve_cutoff(my_cutoff, ids, liens)
     diff = list_differences(ids, slim, liens, boundary, cutoff)
-    numbers = checking_numbers(slim, your_count, prediction["bucket"])
-    cutoff_note = f"<p>{html.escape(note)}</p>" if note else ""
-    return (
-        "<h3 class='tc-h3'>Part 1 · Your list</h3><p>Your list is compared with the list that follows TriCOG's "
-        "three rules at your own cutoff. Each card counts one reason the two differ.</p>" + cutoff_note
-        + reason_cards_html(diff) + cutoff_card_html(cutoff_card(slim, liens, boundary, cutoff), cutoff)
-        + "<h3 class='tc-h3'>Part 2 · Numbers worth checking</h3>" + checking_html(numbers, diff["reference"])
-        + part_three
-    )
+    rows = trap_rows(diff, cutoff, cutoff_card(slim, liens, boundary, cutoff))
+    return ("<h3 class='tc-h3'>Part 1 · Your list against the correct one</h3>"
+            + comparison_html(diff, len(my_list), prediction["bucket"], cutoff, note)
+            + "<h3 class='tc-h3'>Part 2 · What this scenario was testing</h3>" + trap_table_html(rows))
 
 
 @app.function
