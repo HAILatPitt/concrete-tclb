@@ -160,6 +160,9 @@ with app.setup:
     .tc-list li{margin:4px 0}
     """
 
+    CODE_BLOCK_STYLE = ("font-family:Menlo,ui-monospace,monospace;font-size:13px;border:1px solid #ccc;"
+                        "padding:8px 10px;overflow-x:auto;white-space:nowrap;max-width:100%")
+
     STDOUT_LIMIT = 5000
     DIRECTOR_QUESTIONS = (
         ("Do townhouses or rowhouses count as single-family homes?",
@@ -515,25 +518,33 @@ def list_summary(frozen: dict, liens) -> dict:
 
 
 @app.function
+def code_block_html(text: str) -> str:
+    """Code or output as monospace HTML whose line breaks and indents survive being embedded in other HTML."""
+    lines = [html.escape(line).replace("  ", "&nbsp;&nbsp;") for line in text.split("\n")]
+    # Styled inline: page CSS doesn't reach inside marimo's folds.
+    return (f"<div class='tc-code' style='{CODE_BLOCK_STYLE}'>" + "<br>".join(lines) + "</div>")
+
+
+@app.function
 def task_output_parts(mo, result: dict | None) -> list:
     """What one task's last run produced, as plain page elements (no coloured boxes)."""
     if result is None:
         return [mo.md("*Not run yet.*")]
     parts = []
     if result["stdout"]:
-        parts.append(mo.md(f"```\n{result['stdout']}\n```"))
+        parts.append(mo.Html(code_block_html(result["stdout"])))
     if result["size"] is not None:
         parts.append(mo.md(f"*{result['size']}*"))
     if result["shown"] is not None:
         parts.append(result["shown"])
     if result["value"] is not None:
-        parts.append(mo.md(f"```\n{result['value']}\n```"))
+        parts.append(mo.Html(code_block_html(result["value"])))
     if result["figure"] is not None:
         parts.append(mo.Html(result["figure"]))
     for warning in result["warnings"]:
-        parts.append(mo.md(f"**Python's warning**\n\n```\n{warning}\n```"))
+        parts.append(mo.Html("<div class='tc-doc'><p class='tc-sub'>Python's warning</p></div>" + code_block_html(warning)))
     if result["error"]:
-        parts.append(mo.md(f"**Python's error**\n\n```\n{result['error']}\n```"))
+        parts.append(mo.Html("<div class='tc-doc'><p class='tc-sub'>Python's error</p></div>" + code_block_html(result["error"])))
     return parts or [mo.md("*Ran with no output.*")]
 
 
@@ -1000,20 +1011,25 @@ def observe(get_prediction, get_submitted, mo, reload_button, task_editors, task
             mo.Html(f"<div class='tc-doc'><p class='tc-sub'>What to do</p><p>{html.escape(_task['hint'])}</p></div>"),
             mo.accordion({
                 "Show the pandas functions": mo.md(f"`{_task['functions']}`"),
-                "Show an example": mo.md(f"```python\n{_task['example']}\n```"),
+                "Show an example": mo.Html(code_block_html(_task["example"])),
             }),
         ]
         if get_submitted():
-            _panels.append(mo.md(f"```python\n{task_editors[_key].value}\n```"))
+            _panels.append(mo.Html(code_block_html(task_editors[_key].value)))
         else:
             _panels += [task_editors[_key], task_run_buttons[_key]]
         _panels += task_output_parts(mo, task_outputs.get(_key))
-    # Sticky, so the questions stay beside whichever task the learner is on.
     _questions = mo.vstack([
         mo.Html("<div class='tc-doc'><p class='tc-sub' style='color:#003594'>Questions for the director</p></div>"),
         mo.accordion({question: mo.md(answer) for question, answer in DIRECTOR_QUESTIONS}),
-    ]).style({"position": "sticky", "top": "16px"})
-    mo.hstack([mo.vstack(_panels, gap=0.75), _questions], widths=[3, 1.2], align="start", gap=1.5)
+    ])
+    # A grid, not mo.hstack: minmax(0, ...) columns keep a long line of code scrolling inside its editor instead
+    # of widening the page, and the sticky column keeps the questions beside whichever task is on screen.
+    mo.Html(
+        "<div style='display:grid;grid-template-columns:minmax(0,3fr) minmax(0,1.2fr);gap:24px;align-items:start'>"
+        f"<div style='min-width:0'>{mo.vstack(_panels, gap=0.75)}</div>"
+        f"<div style='position:sticky;top:16px;min-width:0'>{_questions}</div></div>"
+    )
     return
 
 

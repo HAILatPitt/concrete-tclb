@@ -1,17 +1,17 @@
 # ConCReTE: Finding Abandoned Homes for the TriCOG Land Bank
 
-A [marimo](https://marimo.io) notebook in which students build a list of homes the TriCOG Land Bank should consider buying. Every home must be inside TriCOG's 30 member municipalities, be a single-family house, and carry at least one tax lien. It follows ConCReTE's Predict → Observe → Explain → Evaluate structure:
+A [marimo](https://marimo.io) notebook in which students build a list of homes the TriCOG Land Bank should consider buying. Every home must be inside the 30 municipalities in TriCOG's boundary file, be a single-family house, and carry at least one tax lien. It follows ConCReTE's Predict → Observe → Explain → Evaluate structure:
 
 - **Predict:** commit to a method, a definition, a lien amount and a rough count before seeing the data.
-- **Observe:** run and edit eight code cells that look fine until you dig, then build the list with five settings.
+- **Observe:** build the list in eight tasks. Each task shows part of the data first and says in plain words what to do; students write the code themselves, can draw maps with `.plot()`, and can open the function names or an example if they are stuck. A column beside the tasks holds four questions students can ask the director.
 - **Explain:** write a reflection and a note to TriCOG's director.
-- **Evaluate:** see what each of your choices would cost if nobody caught it, counted from the data.
+- **Evaluate:** the list each student built (saved as `my_list`) is compared with the list that follows TriCOG's three rules at the student's own cutoff, and each difference is tied to what it would mean for real households.
 
 The browser version runs entirely in your browser:
 
 https://hailatpitt.github.io/concrete-tclb/
 
-It downloads about 53 MB and takes a few seconds to load.
+It downloads about 53 MB and takes about 30 seconds to load.
 
 ## The data
 
