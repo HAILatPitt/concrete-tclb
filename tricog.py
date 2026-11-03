@@ -16,6 +16,7 @@ with app.setup:
     import textwrap
     import time
     import warnings
+    from decimal import ROUND_FLOOR, Decimal
     from pathlib import Path
 
     import geopandas as gp
@@ -40,6 +41,11 @@ with app.setup:
         "cutoff": 0.0,
     }
     MULTI_FAMILY = ("TWO FAMILY", "THREE FAMILY", "FOUR FAMILY")
+    # Residential use codes people live in, and the empty lots the home-types trap is about. Every other
+    # residential code (rights of way, common areas, coal rights, sheds) is a parcel that isn't a home.
+    HOME_CODES = ("SINGLE FAMILY", "ROWHOUSE", "TOWNHOUSE", "TWO FAMILY", "THREE FAMILY", "FOUR FAMILY", "CONDOMINIUM",
+                  "MOBILE HOME", "MOBILE HOME (IN PARK)", "CONDEMNED/BOARDED-UP", "OTHER RESIDENTIAL STRUCTURE")
+    LOT_CODES = ("RESIDENTIAL VACANT LAND", "VACANT LAND", "BUILDERS LOT", "CONDO DEVELOPMENTAL LAND")
     # TriCOG's 30 member municipalities, upper-case, as named in its boundary file.
     MEMBER_TOWNS = (
         "BLAWNOX", "BRADDOCK", "BRADDOCK HILLS", "CHALFANT", "CHURCHILL", "CLAIRTON", "DRAVOSBURG",
@@ -122,8 +128,8 @@ with app.setup:
         },
         "not_home": {
             "title": "Parcels that aren't homes", "task": None,
-            "what": "Parcels whose class isn't residential, such as shops, municipal buildings and commercial land. "
-                    "They usually come in through a left join in task 7.",
+            "what": "Parcels nobody lives in, such as shops, municipal buildings, commercial land, rights of way and "
+                    "common areas. They usually come in through a left join in task 7.",
             "fall_in": "n/a",
             "costs": "Offers go out on property the program can't use.",
             "households": "Letters reach owners the program was never meant for.",
@@ -148,7 +154,7 @@ with app.setup:
     NOT_IN_LIST = "Not in your final list"
     CANT_TELL = "Can't tell: your list has no parcel IDs."
 
-    STAGES =("Predict", "Observe", "Explain", "Evaluate")
+    STAGES = ("Predict", "Observe", "Explain", "Evaluate")
     OPENING_CARDS = {
         "story": {
             "title": "The story so far",
@@ -773,8 +779,10 @@ def list_differences(ids, slim, liens, boundary, cutoff: float) -> dict:
             reasons["not_home"] += 1
         elif records.at[parid, "USEDESC"] not in REFERENCE_SETTINGS["types"]:
             kind = records.at[parid, "USEDESC"]
-            kind = kind if isinstance(kind, str) else "no use code"
-            reasons["home_types"][kind] = reasons["home_types"].get(kind, 0) + 1
+            if kind in HOME_CODES or kind in LOT_CODES:
+                reasons["home_types"][kind] = reasons["home_types"].get(kind, 0) + 1
+            else:
+                reasons["not_home"] += 1
         elif parid not in owed.index or pd.isna(owed.at[parid]):
             reasons["no_lien"] += 1
         else:
@@ -796,6 +804,7 @@ def list_differences(ids, slim, liens, boundary, cutoff: float) -> dict:
         "duplicates": int(len(ids) - ids.nunique()),
         "ward_towns": {} if empty else missing.loc[ward, "MUNIDESC"].map(town_name).value_counts().to_dict(),
         "border_towns": 0 if empty else int(border.sum()),
+        "border_by_town": {} if empty else missing.loc[border, "MUNIDESC"].map(town_name).value_counts().to_dict(),
         "other": 0 if empty else int((~ward & ~border).sum()),
         "empty": empty,
         "listed": int(listed.size),
@@ -815,8 +824,12 @@ def verb(count: int, one: str, many: str) -> str:
 
 @app.function
 def money(value: float) -> str:
-    value = float(value)
-    return f"${value:,.0f}" if value == round(value) else f"${value:,.2f}"
+    """Dollars, cut down to whole cents rather than rounded up: liens are in cents, so "$999.99 or less" covers the
+    same homes as a 999.999 cutoff."""
+    cents = Decimal(str(float(value))).quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
+    amount = abs(cents)
+    text = f"{amount:,.0f}" if amount == amount.to_integral_value() else f"{amount:,.2f}"
+    return f"{'-' if cents < 0 else ''}${text}"
 
 
 @app.function
@@ -828,7 +841,7 @@ def home_type_groups(home_types: dict) -> dict:
             groups["rowhouses and townhouses"] += count
         elif kind in MULTI_FAMILY:
             groups["two- to four-family homes"] += count
-        elif "VACANT" in kind:
+        elif kind in LOT_CODES:
             groups["vacant lots"] += count
         else:
             groups["other home types"] += count
@@ -843,12 +856,23 @@ def home_groups_text(groups: dict) -> str:
 
 
 @app.function
+def border_text(by_town: dict) -> str:
+    """The three towns with the most missed border homes by name, the rest as one count."""
+    ranked = sorted(by_town.items(), key=lambda item: -item[1])
+    parts = [f"{count:,} in {town_label(town)}" for town, count in ranked[:3]]
+    rest = ranked[3:]
+    if rest:
+        parts.append(f"{sum(count for _, count in rest):,} in {plural(len(rest), 'other town')}")
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+@app.function
 def names_status(diff: dict) -> str:
     ward, border = diff["ward_towns"], diff["border_towns"]
     parts = [counts_text(ward, lambda name: "in " + town_label(name))] if ward else []
     if border:
-        parts.append(plural(border, "home") + " recorded under neighbouring towns")
-    return f"Yes: {plural(sum(ward.values()) + border, 'home')} missed ({', '.join(parts)})"
+        parts.append(f"{border:,} recorded under neighbouring towns: {border_text(diff['border_by_town'])}")
+    return f"Yes: {plural(sum(ward.values()) + border, 'home')} missed ({'; '.join(parts)})"
 
 
 @app.function
@@ -868,7 +892,7 @@ def trap_status(key: str, diff: dict) -> tuple:
     """A designed trap's status, read from the list alone: (text, whether it shows in the list)."""
     if key == "names" and (diff["ward_towns"] or diff["border_towns"]):
         return names_status(diff), True
-    if key == "crs" and diff["empty"]:
+    if key == "crs" and diff["empty"] and diff["reference"]:
         return f"Yes: your list is empty, so all {diff['reference']:,} correct homes are missing.", True
     if key == "types" and diff["home_types"]:
         total = sum(diff["home_types"].values())
