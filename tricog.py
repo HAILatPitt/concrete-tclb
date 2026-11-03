@@ -246,11 +246,11 @@ with app.setup:
     .tc-list{list-style:disc;padding-left:1.5em}
     ol.tc-list{list-style:decimal}
     .tc-list li{margin:4px 0}
-    .tc-notes{margin:0;font-size:14px}
-    .tc-notes dt{font-weight:700;margin-top:6px}
-    .tc-notes dd{margin:0 0 4px 0}
     """
 
+    # Inline, like CODE_BLOCK_STYLE: page styles don't reach inside marimo's tabs.
+    NOTES_STYLE = "display:grid;grid-template-columns:max-content minmax(0,1fr);column-gap:16px;margin:12px 0 0;font-size:14px"
+    NOTE_CELL_STYLE = "margin:0;padding:4px 0;border-bottom:1px solid #e3e3e3"
     CODE_BLOCK_STYLE = ("font-family:Menlo,ui-monospace,monospace;font-size:13px;border:1px solid #ccc;"
                         "padding:8px 10px;overflow-x:auto;white-space:nowrap;max-width:100%")
 
@@ -376,6 +376,8 @@ with app.setup:
     }
     for _task in TASKS.values():
         _task.setdefault("starter", "# Your code here")
+    # None: task 1's tabs page through every row. A number: only the first rows, if full tables are too slow.
+    BROWSE_ROWS = None
     # One line on every column learners get, in the order the prepared files hold them (task 1's tabs).
     COLUMN_NOTES = {
         "assessments": {
@@ -420,9 +422,33 @@ with app.setup:
 
 @app.function
 def column_notes_html(name: str) -> str:
-    items = "".join(f"<dt><code>{html.escape(column)}</code></dt><dd>{html.escape(note)}</dd>"
+    items = "".join(f"<dt style='{NOTE_CELL_STYLE};font-weight:700'><code>{html.escape(column)}</code></dt>"
+                    f"<dd style='{NOTE_CELL_STYLE}'>{html.escape(note)}</dd>"
                     for column, note in COLUMN_NOTES[name].items())
-    return f"<dl class='tc-notes'>{items}</dl>"
+    return f"<dl class='tc-notes' style='{NOTES_STYLE}'>{items}</dl>"
+
+
+@app.function
+def browse_frame(table, rows):
+    """A table for task 1's tabs: shapes as their type, and only the first rows when rows is a number."""
+    return shown_table(table if rows is None else table.head(rows))[0]
+
+
+@app.function
+def data_tabs_view(tables: dict, rows):
+    """Task 1's tabs: each table to scroll, sort and filter, with its column notes under it."""
+    import marimo as mo
+
+    tabs = {}
+    for name in COLUMN_NOTES:
+        table = tables[name]
+        sample = ("" if rows is None else
+                  f"<p>Showing the first {rows:,} of {len(table):,} rows. Your code works on all of them.</p>")
+        browser = mo.ui.table(browse_frame(table, rows), page_size=10, selection=None)
+        # Notes under the table: beside it, they squeezed into a strip one or two words wide.
+        tabs[name] = mo.Html(f"<div style='min-width:0;overflow-x:auto'><div class='tc-doc'>{sample}</div>{browser}"
+                             f"<div class='tc-doc'>{column_notes_html(name)}</div></div>")
+    return mo.ui.tabs(tabs)
 
 
 @app.function
@@ -1185,6 +1211,13 @@ async def load_data(mo):
 
 
 @app.cell
+def data_tabs(tables):
+    # Built once here, so a Run click on another task doesn't rebuild the tables.
+    browse_tabs = data_tabs_view(tables, BROWSE_ROWS)
+    return (browse_tabs,)
+
+
+@app.cell
 def observe_states(mo):
     get_submitted, set_submitted = mo.state(False)
     get_final, set_final = mo.state(None)
@@ -1228,8 +1261,8 @@ def run_clicked_tasks(namespace, run_log, task_editors, task_run_buttons):
 
 
 @app.cell(hide_code=True)
-def observe(get_prediction, get_submitted, mo, reload_button, task_editors, task_outputs, task_previews,
-            task_run_buttons):
+def observe(browse_tabs, get_prediction, get_submitted, mo, reload_button, task_editors, task_outputs,
+            task_previews, task_run_buttons):
     mo.stop(get_prediction() is None)
     _reloaded = f" The data has been reloaded {reload_button.value} time(s)." if reload_button.value else ""
     _panels = [
@@ -1246,6 +1279,7 @@ def observe(get_prediction, get_submitted, mo, reload_button, task_editors, task
                     "<p class='tc-sub'>The data</p></div>"),
             mo.Html(f"<div class='tc-doc'><p>{html.escape(_preview)}</p></div>") if isinstance(_preview, str)
             else table_ready(_preview),
+            *([browse_tabs] if _key == "files" else []),
             mo.Html(f"<div class='tc-doc'><p class='tc-sub'>What to do</p><p>{html.escape(_task['hint'])}</p></div>"),
             mo.accordion({
                 "Show the pandas functions": mo.md(f"`{_task['functions']}`"),
