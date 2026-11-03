@@ -5,6 +5,7 @@ app = marimo.App(width="medium", app_title="TriCOG Land Bank")
 
 with app.setup:
     import ast
+    import base64
     import contextlib
     import functools
     import html
@@ -17,7 +18,12 @@ with app.setup:
 
     import geopandas as gp
     import pandas as pd
+    import matplotlib
     import pyarrow  # noqa: F401  (marimo loads Pyodide packages from imports; pandas needs it for parquet)
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.axes import Axes
 
     DATA_FILES = ("assessments", "liens", "parcels", "tricog", "boundary")
     # Coordinate systems as each source publishes them: WPRDC parcels in Pennsylvania South feet,
@@ -341,18 +347,35 @@ def cutoff_card(slim, liens, boundary, cutoff: float) -> dict:
 
 
 @app.function
-def cell_namespace(tables: dict) -> dict:
+def prepared_tables(tables: dict) -> dict:
     # assessments is shared, not copied (it's the big one); "Reload the data" restores it.
     return {
         "assessments": tables["assessments"],
         "liens": tables["liens"].copy(),
         "parcels": tables["parcels"].copy(),
         "tricog": tables["tricog"].copy(),
-        "inside_tricog": tables["boundary"].loc[tables["boundary"]["by_map"], ["PARID"]].reset_index(drop=True),
-        "pd": pd,
-        "gp": gp,
-        "time": time,
     }
+
+
+@app.function
+def make_namespace(tables: dict) -> dict:
+    """One namespace for the whole session, like a notebook: what a task saves, later tasks can use."""
+    return {**prepared_tables(tables), "pd": pd, "gp": gp, "plt": plt, "time": time}
+
+
+@app.function
+def reload_into(namespace: dict, tables: dict) -> None:
+    """Put fresh copies of the prepared tables back; the learner's own results stay."""
+    namespace.update(prepared_tables(tables))
+
+
+@app.function
+def figure_html(figure) -> str:
+    """Draw now, so a figure that can't be drawn fails inside run_code's guard, not in the page."""
+    buffer = io.BytesIO()
+    figure.savefig(buffer, format="png", dpi=100, bbox_inches="tight")
+    encoded = base64.b64encode(buffer.getvalue()).decode()
+    return f"<img src='data:image/png;base64,{encoded}' style='max-width:100%' alt='Your map'>"
 
 
 @app.function
@@ -376,7 +399,7 @@ def shown_table(value) -> tuple:
 
 @app.function
 def drawn_table(frame):
-    """Format the table now, inside run_cell's guard: a table marimo can't draw (duplicate column names, say)
+    """Format the table now, inside run_code's guard: a table marimo can't draw (duplicate column names, say)
     must not break the Observe stage later. None means "show it as text instead"."""
     import marimo as mo
 
@@ -394,12 +417,13 @@ def cut_text(text: str) -> str:
 
 
 @app.function
-def run_cell(code: str, tables: dict) -> dict:
-    """Run a student's cell; return its printed text, last value, warnings and error. Nothing is graded."""
-    namespace = cell_namespace(tables)
+def run_code(code: str, namespace: dict) -> dict:
+    """Run a learner's code in the shared namespace; return its printed text, last value, figure, warnings and
+    error. Nothing is graded."""
     stdout = io.StringIO()
     value, error, caught = None, None, []
-    result, shown, size, text = None, None, None, None
+    result, shown, size, text, figure = None, None, None, None, None
+    plt.close("all")
     try:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -412,16 +436,20 @@ def run_cell(code: str, tables: dict) -> dict:
         if isinstance(value, (pd.DataFrame, pd.Series)):
             result, size = shown_table(value)
             shown = drawn_table(result)
-        if value is not None and shown is None:
+        if plt.get_fignums():
+            figure = figure_html(plt.gcf())
+        if value is not None and shown is None and not isinstance(value, Axes):
             text = cut_text(repr(value))
     except (Exception, SystemExit) as exc:
         error = f"{type(exc).__name__}: {exc}"
+    plt.close("all")
     return {
         "stdout": cut_text(stdout.getvalue()),
         "value": text,
         "result": result,
         "shown": shown,
         "size": size,
+        "figure": figure,
         "warnings": list(dict.fromkeys(str(w.message) for w in caught))[:5],
         "error": error,
     }
@@ -824,7 +852,7 @@ def reload_data(blobs, reload_button, reload_log, shared):
 @app.cell
 def run_clicked_cells(cell_editors, cell_run_buttons, run_log, shared):
     for _key in clicked_cells(cell_run_buttons.value, run_log["done"]):
-        run_log["outputs"][_key] = run_cell(cell_editors[_key].value, shared["tables"])
+        run_log["outputs"][_key] = run_code(cell_editors[_key].value, make_namespace(shared["tables"]))
         run_log["done"][_key] = cell_run_buttons.value[_key]
     cell_outputs = dict(run_log["outputs"])
     runs = dict(run_log["done"])
