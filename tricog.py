@@ -246,6 +246,9 @@ with app.setup:
     .tc-list{list-style:disc;padding-left:1.5em}
     ol.tc-list{list-style:decimal}
     .tc-list li{margin:4px 0}
+    .tc-notes{margin:0;font-size:14px}
+    .tc-notes dt{font-weight:700;margin-top:6px}
+    .tc-notes dd{margin:0 0 4px 0}
     """
 
     CODE_BLOCK_STYLE = ("font-family:Menlo,ui-monospace,monospace;font-size:13px;border:1px solid #ccc;"
@@ -265,15 +268,17 @@ with app.setup:
     )
     TASKS = {
         "files": {
-            "title": "Look at the files",
+            "title": "Look at the data",
             "director": "The analyst left you four tables. Before anything else, find out what is in each one.",
-            "hint": "Look at each table's size and first rows. Two of the tables can be drawn on a map. Find out "
-                    "which two, and what coordinate system each of them uses. Nothing needs saving here.",
-            "functions": "len(table), table.head(), table.columns, table.crs",
+            "hint": "Look through each table in the tabs above and read the note on every column. Find which column "
+                    "holds the parcel ID in each table: it has a different name in three of them. Then find which "
+                    "two tables can be drawn on a map, and what coordinate system each of them uses. Nothing needs "
+                    "saving here.",
+            "functions": "table.columns, table.head(), table.dtypes, table.crs",
             "example": textwrap.dedent("""\
                 tables = {"assessments": assessments, "liens": liens, "parcels": parcels, "tricog": tricog}
                 for name, table in tables.items():
-                    print(name, table.shape, getattr(table, "crs", "no shapes"))"""),
+                    print(name, list(table.columns), getattr(table, "crs", "no shapes"))"""),
             "saves": (),
         },
         "names": {
@@ -371,6 +376,53 @@ with app.setup:
     }
     for _task in TASKS.values():
         _task.setdefault("starter", "# Your code here")
+    # One line on every column learners get, in the order the prepared files hold them (task 1's tabs).
+    COLUMN_NOTES = {
+        "assessments": {
+            "PARID": "The county's parcel ID, a 16-character code such as 0858M00274000000.",
+            "PROPERTYADDRESS": "The street address of the property, when it has one.",
+            "MUNICODE": "The county's number for the municipality the parcel is in, such as 879.",
+            "MUNIDESC": "The name of that municipality as the county writes it, such as Monroeville or Braddock.",
+            "OWNERDESC": "The kind of owner, such as REGULAR (a person) or CORPORATION.",
+            "CLASSDESC": "The broad class of the property, such as RESIDENTIAL, COMMERCIAL or GOVERNMENT.",
+            "USEDESC": "What the property is used for, such as SINGLE FAMILY or MUNICIPAL GOVERNMENT.",
+            "YEARBLT": "The year the building was built, blank for land with no building.",
+            "CONDITIONDESC": "The assessor's rating of the building, such as GOOD, FAIR or VERY POOR.",
+            "SALEDATE": "The date of the last recorded sale, written month, day, year, such as 07-02-2013.",
+            "SALEPRICE": "The price of that last sale, in dollars.",
+            "FAIRMARKETTOTAL": "The county's estimate of what the land and building together are worth, in dollars.",
+        },
+        "liens": {
+            "pin": "The parcel ID the liens are filed against, the same 16-character code.",
+            "number": "How many tax liens are filed against the parcel.",
+            "total_amount": "The total owed on those liens, in dollars.",
+        },
+        "parcels": {
+            "PIN": "The parcel ID, the same 16-character code.",
+            "MAPBLOCKLO": "The parcel's map, block and lot number on the county's maps, such as 858-M-274.",
+            "MUNICODE": "The county's number for the municipality the parcel is in.",
+            "CALCACREAG": "The parcel's area in acres, worked out from its shape.",
+            "Shape_Leng": "The length of the parcel's outline, in feet.",
+            "geometry": "The parcel's shape, shown here as its type.",
+        },
+        "tricog": {
+            "NAME": "The municipality's short name, such as Reserve or Blawnox.",
+            "NAMELSAD": "The name with its kind of local government, such as Reserve township.",
+            "GEOID": "The Census code for the municipality, such as 4200364240.",
+            "ALAND": "Land area, in square metres.",
+            "AWATER": "Water area, in square metres.",
+            "INTPTLAT": "Latitude of a point inside the municipality, in degrees.",
+            "INTPTLON": "Longitude of that point, in degrees.",
+            "geometry": "The municipality's outline, shown here as its type.",
+        },
+    }
+
+
+@app.function
+def column_notes_html(name: str) -> str:
+    items = "".join(f"<dt><code>{html.escape(column)}</code></dt><dd>{html.escape(note)}</dd>"
+                    for column, note in COLUMN_NOTES[name].items())
+    return f"<dl class='tc-notes'>{items}</dl>"
 
 
 @app.function
