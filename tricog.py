@@ -11,6 +11,7 @@ with app.setup:
     import html
     import io
     import math
+    import numbers
     import sys
     import textwrap
     import time
@@ -654,19 +655,30 @@ def eval_card_html(card_id: str, title: str, rows: tuple) -> str:
 
 
 @app.function
+def id_column(my_list, name: str):
+    """One ID column, even when the learner's table repeats the column name."""
+    column = my_list[name]
+    return column.iloc[:, 0] if isinstance(column, pd.DataFrame) else column
+
+
+@app.function
 def list_ids(my_list):
-    """The parcel IDs on the learner's list, from the first ID column their joins kept; None if there is none."""
+    """The parcel ID of each row on the learner's list. A left join can leave PARID empty on rows that still have
+    a PIN, so each row takes the first ID column that has a value; rows with no ID at all are dropped."""
     if not isinstance(my_list, pd.DataFrame):
         return None
-    for column in ("PARID", "PIN", "pin"):
-        if column in my_list.columns:
-            return my_list[column]
-    return None
+    columns = [name for name in ("PARID", "PIN", "pin") if name in my_list.columns]
+    if not columns:
+        return None
+    ids = id_column(my_list, columns[0])
+    for name in columns[1:]:
+        ids = ids.fillna(id_column(my_list, name))
+    return ids.dropna().rename("PARID").reset_index(drop=True)
 
 
 @app.function
 def is_number(value) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    return isinstance(value, numbers.Real) and not isinstance(value, bool) and math.isfinite(value)
 
 
 @app.function
@@ -706,7 +718,9 @@ def list_differences(ids, slim, liens, boundary, cutoff: float) -> dict:
             reasons["below_cutoff"] += 1
     missing = reference[~reference["PARID"].isin(listed)]
     towns = missing["MUNIDESC"].map(town_name)
-    ward = towns.str.upper().isin(("MCKEESPORT", "CLAIRTON"))
+    # A ward town counts as missed by name only when none of its homes made the list.
+    listed_towns = set(reference.loc[reference["PARID"].isin(listed), "MUNIDESC"].map(town_name).str.upper())
+    ward = towns.str.upper().isin({"MCKEESPORT", "CLAIRTON"} - listed_towns)
     return {
         **reasons,
         "not_single_family": dict(sorted(reasons["not_single_family"].items(), key=lambda item: -item[1])),
@@ -815,16 +829,37 @@ def checking_html(numbers: dict, reference_count) -> str:
 
 
 @app.function
-def evaluation_html(slim, liens, boundary, my_list, my_cutoff, prediction: dict) -> str:
-    ids = list_ids(my_list)
+def unreadable_list_html(slim, my_list, prediction: dict) -> str:
+    your_count = len(my_list) if isinstance(my_list, (pd.DataFrame, pd.Series)) else 0
+    numbers = checking_numbers(slim, your_count, prediction["bucket"])
+    return ("<p>Your my_list has no usable parcel-ID column (PARID, PIN or pin), so it can't be compared with the "
+            "correct list. Parts 2 and 3 still apply.</p><h3 class='tc-h3'>Part 2 · Numbers worth checking</h3>"
+            + checking_html(numbers, None) + hidden_facts_html())
+
+
+@app.function
+def hidden_facts_html() -> str:
     facts = "".join(f"<li>{html.escape(fact, quote=False)}</li>" for fact in HIDDEN_FACTS)
-    part_three = f"<h3 class='tc-h3'>Part 3 · What the data was hiding</h3><ol class='tc-list'>{facts}</ol>"
+    return f"<h3 class='tc-h3'>Part 3 · What the data was hiding</h3><ol class='tc-list'>{facts}</ol>"
+
+
+@app.function
+def evaluation_html(slim, liens, boundary, my_list, my_cutoff, prediction: dict) -> str:
+    """The evaluation page. Submit has already locked everything, so a list it can't read gets the short page
+    instead of an error."""
+    try:
+        return list_evaluation_html(slim, liens, boundary, my_list, my_cutoff, prediction)
+    except Exception:
+        return unreadable_list_html(slim, my_list, prediction)
+
+
+@app.function
+def list_evaluation_html(slim, liens, boundary, my_list, my_cutoff, prediction: dict) -> str:
+    ids = list_ids(my_list)
+    part_three = hidden_facts_html()
     your_count = len(my_list) if isinstance(my_list, (pd.DataFrame, pd.Series)) else 0
     if ids is None:
-        numbers = checking_numbers(slim, your_count, prediction["bucket"])
-        return ("<p>Your my_list has no parcel-ID column (PARID, PIN or pin), so it can't be compared with the "
-                "correct list. Parts 2 and 3 still apply.</p><h3 class='tc-h3'>Part 2 · Numbers worth checking</h3>"
-                + checking_html(numbers, None) + part_three)
+        return unreadable_list_html(slim, my_list, prediction)
     cutoff, note = resolve_cutoff(my_cutoff, ids, liens)
     diff = list_differences(ids, slim, liens, boundary, cutoff)
     numbers = checking_numbers(slim, your_count, prediction["bucket"])
