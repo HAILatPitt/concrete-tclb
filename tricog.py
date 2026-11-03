@@ -123,7 +123,7 @@ with app.setup:
         "not_home": {
             "title": "Parcels that aren't homes", "task": None,
             "what": "Parcels whose class isn't residential, such as shops, municipal buildings and commercial land. "
-                    "A left join when combining in task 7 brings them in.",
+                    "They usually come in through a left join in task 7.",
             "fall_in": "n/a",
             "costs": "Offers go out on property the program can't use.",
             "households": "Letters reach owners the program was never meant for.",
@@ -195,8 +195,9 @@ with app.setup:
            "plain words what to do, and you write the code. What you save in one task is there for the next, and "
            "task 8 saves your finished list as my_list.",
         3: "Look back at what you predicted and what the data showed. Your answers go to the director with your list.",
-        4: "Your list is compared with the one that follows TriCOG's three rules at your own cutoff. Each card counts "
-           "one difference and says what it would mean for real households.",
+        4: "Part 1 compares your list with the one that follows TriCOG's three rules at your own cutoff. Part 2 goes "
+           "through each trap this scenario set, whether it shows in your final list, and what it would mean for "
+           "real households.",
     }
     PREDICT_GUIDING = (
         "What could go wrong if you find places by matching their names?",
@@ -232,6 +233,10 @@ with app.setup:
     .tc-traps th,.tc-traps td{border-bottom:1px solid #ddd;padding:8px 10px 8px 0;text-align:left;vertical-align:top}
     .tc-traps th{color:#003594}
     .tc-traps .tc-task-no{color:#666}
+    .tc-traps th:nth-child(1){width:24%}
+    .tc-traps th:nth-child(2){width:14%}
+    .tc-traps th:nth-child(3){width:22%}
+    .tc-traps th:nth-child(4),.tc-traps th:nth-child(5){width:20%}
     .tc-list{list-style:disc;padding-left:1.5em}
     ol.tc-list{list-style:decimal}
     .tc-list li{margin:4px 0}
@@ -809,6 +814,22 @@ def money(value: float) -> str:
 
 
 @app.function
+def home_type_groups(home_types: dict) -> dict:
+    """Use codes grouped the way the home-types row describes them; empty groups are left out."""
+    groups = {"rowhouses and townhouses": 0, "two- to four-family homes": 0, "vacant lots": 0, "other home types": 0}
+    for kind, count in home_types.items():
+        if kind in ("ROWHOUSE", "TOWNHOUSE"):
+            groups["rowhouses and townhouses"] += count
+        elif kind in MULTI_FAMILY:
+            groups["two- to four-family homes"] += count
+        elif "VACANT" in kind:
+            groups["vacant lots"] += count
+        else:
+            groups["other home types"] += count
+    return {label: count for label, count in groups.items() if count}
+
+
+@app.function
 def names_status(diff: dict) -> str:
     ward, border = diff["ward_towns"], diff["border_towns"]
     parts = [counts_text(ward, lambda name: "in " + town_label(name))] if ward else []
@@ -837,7 +858,7 @@ def trap_status(key: str, diff: dict) -> tuple:
     if key == "types" and diff["home_types"]:
         total = sum(diff["home_types"].values())
         return (f"Yes: {plural(total, 'parcel')} on your list: "
-                f"{counts_text(diff['home_types'], lambda kind: kind.lower())}"), True
+                f"{counts_text(home_type_groups(diff['home_types']), lambda label: label)}"), True
     if key == "no_lien" and diff["no_lien"]:
         return f"Yes: {plural(diff['no_lien'], 'home')} on your list owe nothing.", True
     return NOT_IN_LIST, False
@@ -889,7 +910,7 @@ def comparison_html(diff: dict, row_count: int, guess: str, cutoff: float, note:
              "is what TriCOG's three rules give when they are applied to the data without slips: inside a member "
              f"town, a single-family home, and liens totalling more than your cutoff. It uses your own cutoff of "
              f"{money(cutoff)}, so any difference comes from how the list was built. Each home that is on only one "
-             "of the two lists is a real household: a letter that shouldn't go out, or an empty house nobody visits.")
+             "of the two lists is a household: a letter that shouldn't go out, or an empty house nobody visits.")
     counts = counts_table_html((
         ("Parcels on your list", diff["listed"]),
         (f"Homes on the correct list at {money(cutoff)}", diff["reference"]),
