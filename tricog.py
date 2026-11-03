@@ -10,6 +10,7 @@ with app.setup:
     import functools
     import html
     import io
+    import math
     import sys
     import textwrap
     import time
@@ -301,62 +302,8 @@ def reference_list(slim, liens, boundary, cutoff: float):
 
 
 @app.function
-def one_change(slim, liens, boundary, settings: dict, name: str):
-    """The reference list with only one setting (and the cutoff) taken from the student's choices."""
-    changed = {**REFERENCE_SETTINGS, name: settings[name], "cutoff": settings["cutoff"]}
-    return build_list(slim, liens, boundary, changed)
-
-
-@app.function
 def town_name(munidesc: str) -> str:
     return munidesc.split("-")[-1].strip()
-
-
-@app.function
-def boundary_card(slim, liens, boundary, settings: dict) -> dict | None:
-    if settings["boundary"] == REFERENCE_SETTINGS["boundary"]:
-        return None
-    reference = reference_list(slim, liens, boundary, settings["cutoff"])
-    chosen = one_change(slim, liens, boundary, settings, "boundary")
-    missed = reference[~reference["PARID"].isin(chosen["PARID"])]
-    towns = missed["MUNIDESC"].map(town_name)
-    member = towns.str.upper().isin(MEMBER_TOWNS)
-    return {"missed": len(missed), "by_town": towns[member].value_counts().to_dict(), "border": int((~member).sum())}
-
-
-@app.function
-def definition_card(slim, liens, boundary, settings: dict) -> dict | None:
-    if set(settings["types"]) == set(REFERENCE_SETTINGS["types"]):
-        return None
-    reference = reference_list(slim, liens, boundary, settings["cutoff"])
-    chosen = one_change(slim, liens, boundary, settings, "types")
-    extra = chosen[~chosen["PARID"].isin(reference["PARID"])]
-    return {
-        "extra": len(extra),
-        "extra_by_type": extra["USEDESC"].value_counts().to_dict(),
-        "missed": int((~reference["PARID"].isin(chosen["PARID"])).sum()),
-        "multi_family_extra": int(extra["USEDESC"].isin(MULTI_FAMILY).sum()),
-    }
-
-
-@app.function
-def liens_join_card(slim, liens, boundary, settings: dict) -> dict | None:
-    if settings["liens_join"] == REFERENCE_SETTINGS["liens_join"]:
-        return None
-    chosen = one_change(slim, liens, boundary, settings, "liens_join")
-    return {"no_lien_rows": int(chosen["total_amount"].isna().sum())}
-
-
-@app.function
-def combine_card(slim, liens, boundary, settings: dict) -> dict | None:
-    if settings["combine_join"] == REFERENCE_SETTINGS["combine_join"]:
-        return None
-    reference = reference_list(slim, liens, boundary, settings["cutoff"])
-    chosen = one_change(slim, liens, boundary, settings, "combine_join")
-    added_ids = chosen.loc[~chosen["PARID"].isin(reference["PARID"]), ["PARID"]]
-    looked_up = added_ids.merge(slim, on="PARID", how="left")
-    is_home = (looked_up["CLASSDESC"] == "RESIDENTIAL") & looked_up["USEDESC"].isin(REFERENCE_SETTINGS["types"])
-    return {"not_single_family": int((~is_home).sum()), "single_family_no_lien": int(is_home.sum())}
 
 
 @app.function
@@ -529,8 +476,7 @@ def count_bucket(count: int) -> str:
 
 
 @app.function
-def checking_numbers(slim, liens, boundary, settings: dict, guess: str) -> dict:
-    your_count = len(build_list(slim, liens, boundary, settings))
+def checking_numbers(slim, your_count: int, guess: str) -> dict:
     single_family = (slim["CLASSDESC"] == "RESIDENTIAL") & slim["USEDESC"].isin(REFERENCE_SETTINGS["types"])
     return {
         "mismatched_clip_rows": MISMATCHED_CLIP_ROWS,
@@ -571,14 +517,6 @@ def can_submit(fields: dict) -> bool:
 
 
 @app.function
-def settings_from_controls(boundary, types, liens_join, combine_join, cutoff) -> dict | None:
-    if None in (boundary, liens_join, combine_join):
-        return None
-    return {"boundary": boundary, "types": tuple(types), "liens_join": liens_join,
-            "combine_join": combine_join, "cutoff": float(cutoff)}
-
-
-@app.function
 def stage_header_html(stage: int) -> str:
     return f"<div class='tc-stage'><small>Stage {stage} of 4</small><h2>{STAGES[stage - 1]}</h2></div>"
 
@@ -614,18 +552,6 @@ def locked_prediction_html(prediction: dict) -> str:
 
 
 @app.function
-def settings_html(settings: dict) -> str:
-    return (
-        "<ul class='tc-list'>"
-        f"<li>Boundary: {html.escape(BOUNDARY_LABELS[settings['boundary']])}</li>"
-        f"<li>Home types: {html.escape(types_text(settings['types']))}</li>"
-        f"<li>Joining liens: {html.escape(JOIN_LABELS[settings['liens_join']])}</li>"
-        f"<li>Combining: {html.escape(JOIN_LABELS[settings['combine_join']])}</li>"
-        f"<li>Lien cutoff: more than ${settings['cutoff']:,.0f}</li></ul>"
-    )
-
-
-@app.function
 def town_label(name: str) -> str:
     return name.title().replace("Mck", "McK")
 
@@ -642,63 +568,119 @@ def eval_card_html(card_id: str, title: str, rows: tuple) -> str:
 
 
 @app.function
-def border_text(border: int) -> str:
-    if not border:
-        return ""
-    return f", and {border:,} on parcels that straddle TriCOG's border and are recorded under a neighbouring town"
+def list_ids(my_list):
+    """The parcel IDs on the learner's list, from the first ID column their joins kept; None if there is none."""
+    if not isinstance(my_list, pd.DataFrame):
+        return None
+    for column in ("PARID", "PIN", "pin"):
+        if column in my_list.columns:
+            return my_list[column]
+    return None
 
 
 @app.function
-def boundary_card_html(card: dict) -> str:
-    return eval_card_html("boundary", "Finding parcels by town name", (
-        ("What you chose", "You matched town names instead of using the map."),
-        ("Why it matters", "McKeesport's and Clairton's assessment records are split into wards, so their names "
-                           "never match TriCOG's list."),
-        ("The count", f"{card['missed']:,} homes on the map-based list are missing from yours: "
-                      f"{counts_text(card['by_town'], lambda name: 'in ' + town_label(name))}"
-                      f"{border_text(card['border'])}."),
-        ("What happens", "Eligible empty houses in those towns are never considered, and TriCOG's effort shifts "
-                         "away from them."),
-    ))
+def is_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 @app.function
-def definition_card_html(card: dict, types) -> str:
-    rows = [("What you chose", f"You counted these as single-family: {types_text(types)}."),
-            ("Why it matters", "The director means single-family houses only.")]
-    if card["extra"]:
-        rows.append(("The count", f"{card['extra']:,} extra parcels on your list: "
-                                  f"{counts_text(card['extra_by_type'], lambda name: name.lower())}."))
-        happens = "TriCOG makes offers its program can't use."
-        if card["multi_family_extra"]:
-            happens += (f" {card['multi_family_extra']:,} of them are two- to four-family homes, where tenants "
-                        "could lose their homes.")
-        rows.append(("What happens", happens))
-    if card["missed"]:
-        rows.append(("Homes missed", f"{card['missed']:,} eligible single-family homes are missing from your list, "
-                                     "so those houses stay empty."))
-    return eval_card_html("definition", "Which homes count as single-family", tuple(rows))
+def resolve_cutoff(my_cutoff, ids, liens) -> tuple:
+    if is_number(my_cutoff):
+        return float(my_cutoff), ""
+    owed = liens.loc[liens["pin"].isin(ids), "total_amount"]
+    if owed.empty:
+        return 0.0, "You didn't save a number as my_cutoff, and no home on your list has a lien, so this uses $0."
+    value = float(owed.min()) - 0.01
+    return value, (f"You didn't save a number as my_cutoff, so this uses ${value:,.2f}, just under the smallest lien "
+                   "on your list.")
 
 
 @app.function
-def liens_join_card_html(card: dict) -> str:
-    return eval_card_html("liens_join", "Joining homes to liens", (
-        ("What you chose", "A left join, which keeps every home whether or not it has a lien."),
-        ("The count", f"{card['no_lien_rows']:,} rows on your list owe nothing."),
-        ("What happens", "Letters suggesting their home could be taken go to households that owe nothing."),
-    ))
+def list_differences(ids, slim, liens, boundary, cutoff: float) -> dict:
+    """Why the learner's list differs from the correct one at their cutoff. Each parcel gets the first reason
+    that applies, so the counts add up."""
+    reference = reference_list(slim, liens, boundary, cutoff)
+    listed = pd.Series(ids.unique(), name="PARID")
+    extra = listed[~listed.isin(reference["PARID"])]
+    inside = set(boundary.loc[boundary["by_map"], "PARID"])
+    records = slim.drop_duplicates("PARID").set_index("PARID")
+    owed = liens.drop_duplicates("pin").set_index("pin")["total_amount"]
+    reasons = {"outside": 0, "not_single_family": {}, "no_lien": 0, "below_cutoff": 0}
+    for parid in extra:
+        if parid not in inside:
+            reasons["outside"] += 1
+        elif parid not in records.index or records.at[parid, "CLASSDESC"] != "RESIDENTIAL" or \
+                records.at[parid, "USEDESC"] not in REFERENCE_SETTINGS["types"]:
+            kind = records.at[parid, "USEDESC"] if parid in records.index else "no record"
+            kind = kind if isinstance(kind, str) else "no record"
+            reasons["not_single_family"][kind] = reasons["not_single_family"].get(kind, 0) + 1
+        elif parid not in owed.index or pd.isna(owed.at[parid]):
+            reasons["no_lien"] += 1
+        else:
+            reasons["below_cutoff"] += 1
+    missing = reference[~reference["PARID"].isin(listed)]
+    towns = missing["MUNIDESC"].map(town_name)
+    ward = towns.str.upper().isin(("MCKEESPORT", "CLAIRTON"))
+    return {
+        **reasons,
+        "not_single_family": dict(sorted(reasons["not_single_family"].items(), key=lambda item: -item[1])),
+        "duplicates": int(len(ids) - ids.nunique()),
+        "ward_towns": towns[ward].value_counts().to_dict(),
+        "other": int((~ward).sum()),
+        "listed": int(listed.size),
+        "reference": len(reference),
+    }
 
 
 @app.function
-def combine_card_html(card: dict) -> str:
-    return eval_card_html("combine", "Combining the three rules", (
-        ("What you chose", "A left join, which keeps every parcel inside TriCOG whether or not it passed the "
-                           "other two rules."),
-        ("The count", f"{card['not_single_family']:,} parcels that aren't single-family homes, and "
-                      f"{card['single_family_no_lien']:,} homes with no lien."),
-        ("What happens", "Offers on businesses, apartments and lots the program can't use, and letters to "
-                         "households that owe nothing."),
-    ))
+def reason_cards_html(diff: dict) -> str:
+    cards = []
+    if diff["outside"]:
+        cards.append(eval_card_html("outside", "Parcels outside TriCOG", (
+            ("The count", f"{diff['outside']:,} parcels on your list are outside TriCOG's member municipalities."),
+            ("What happens", "By law the land bank can't buy them, so staff time goes into homes it can never take on."),
+        )))
+    if diff["not_single_family"]:
+        total = sum(diff["not_single_family"].values())
+        multi = sum(count for kind, count in diff["not_single_family"].items() if kind in MULTI_FAMILY)
+        happens = "TriCOG makes offers on property its program can't use."
+        if multi:
+            happens += f" {multi:,} are two- to four-family homes, where tenants could lose their homes."
+        cards.append(eval_card_html("not_single_family", "Parcels that aren't single-family homes", (
+            ("The count", f"{total:,} parcels on your list: "
+                          f"{counts_text(diff['not_single_family'], lambda kind: kind.lower())}."),
+            ("What happens", happens),
+        )))
+    if diff["no_lien"]:
+        cards.append(eval_card_html("no_lien", "Homes with no lien", (
+            ("The count", f"{diff['no_lien']:,} homes on your list owe nothing."),
+            ("What happens", "Letters suggesting their home could be taken go to households that owe nothing."),
+        )))
+    if diff["below_cutoff"]:
+        cards.append(eval_card_html("below_cutoff", "Homes under your own cutoff", (
+            ("The count", f"{diff['below_cutoff']:,} homes on your list owe no more than the cutoff you saved."),
+            ("What happens", "Your list includes homes your own rule meant to leave out."),
+        )))
+    if diff["duplicates"]:
+        cards.append(eval_card_html("duplicates", "The same parcel more than once", (
+            ("The count", f"{diff['duplicates']:,} extra rows repeat a parcel already on your list."),
+            ("What happens", "The same household could be visited or written to twice."),
+        )))
+    if diff["ward_towns"]:
+        missed = sum(diff["ward_towns"].values())
+        cards.append(eval_card_html("ward_towns", "Homes missing from McKeesport and Clairton", (
+            ("The count", f"{missed:,} homes are missing: "
+                          f"{counts_text(diff['ward_towns'], lambda name: 'in ' + town_label(name))}."),
+            ("Why", "Their assessment records are split into wards, so the town names never match TriCOG's list."),
+            ("What happens", "Eligible empty houses in those towns are never considered, and TriCOG's effort "
+                             "shifts away from them."),
+        )))
+    if diff["other"]:
+        cards.append(eval_card_html("other", "Other homes missing from your list", (
+            ("The count", f"{diff['other']:,} homes that meet every rule at your cutoff aren't on your list."),
+            ("What happens", "If they are empty, they stay empty."),
+        )))
+    return "".join(cards)
 
 
 @app.function
@@ -730,44 +712,48 @@ def cutoff_card_html(card: dict, cutoff: float) -> str:
 
 
 @app.function
-def checking_html(numbers: dict, reference_count: int) -> str:
+def checking_html(numbers: dict, reference_count) -> str:
     bigger = (" Your list has more rows than that." if numbers["your_count"] > numbers["single_family_in_area"]
               else "")
+    compare = ("" if reference_count is None else
+               f" The list that follows TriCOG's three rules at your cutoff has {reference_count:,}.")
     items = (
-        f"The clip across two coordinate systems returned {numbers['mismatched_clip_rows']} rows.",
-        f"The reversed clip returned {numbers['reversed_clip_rows']} rows: towns, not parcels.",
+        f"Clipping across two coordinate systems returns {numbers['mismatched_clip_rows']} rows.",
+        f"Clipping TriCOG by the Braddock sample returns {numbers['reversed_clip_rows']} rows: towns, not parcels.",
         f"The whole prepared area holds {numbers['single_family_in_area']:,} single-family homes, so a list "
         f"larger than that can't be a list of homes.{bigger}",
-        f"You guessed {numbers['guess']}. Your list has {numbers['your_count']:,} rows ({numbers['your_bucket']}). "
-        f"With the map, the director's definition and inner joins, at your cutoff, the list has "
-        f"{reference_count:,}.",
+        f"You guessed {numbers['guess']}. Your list has {numbers['your_count']:,} rows ({numbers['your_bucket']})."
+        + compare,
     )
     return "<ul class='tc-list'>" + "".join(f"<li>{html.escape(item)}</li>" for item in items) + "</ul>"
 
 
 @app.function
-def evaluation_html(slim, liens, boundary, settings: dict, prediction: dict) -> str:
-    args = (slim, liens, boundary, settings)
-    cards = [
-        boundary_card_html(card) if (card := boundary_card(*args)) else "",
-        definition_card_html(card, settings["types"]) if (card := definition_card(*args)) else "",
-        liens_join_card_html(card) if (card := liens_join_card(*args)) else "",
-        combine_card_html(card) if (card := combine_card(*args)) else "",
-        cutoff_card_html(cutoff_card(slim, liens, boundary, settings["cutoff"]), settings["cutoff"]),
-    ]
-    numbers = checking_numbers(*args, prediction["bucket"])
-    reference_count = len(reference_list(slim, liens, boundary, settings["cutoff"]))
+def evaluation_html(slim, liens, boundary, my_list, my_cutoff, prediction: dict) -> str:
+    ids = list_ids(my_list)
     facts = "".join(f"<li>{html.escape(fact, quote=False)}</li>" for fact in HIDDEN_FACTS)
+    part_three = f"<h3 class='tc-h3'>Part 3 · What the data was hiding</h3><ol class='tc-list'>{facts}</ol>"
+    your_count = len(my_list) if isinstance(my_list, (pd.DataFrame, pd.Series)) else 0
+    if ids is None:
+        numbers = checking_numbers(slim, your_count, prediction["bucket"])
+        return ("<p>Your my_list has no parcel-ID column (PARID, PIN or pin), so it can't be compared with the "
+                "correct list. Parts 2 and 3 still apply.</p><h3 class='tc-h3'>Part 2 · Numbers worth checking</h3>"
+                + checking_html(numbers, None) + part_three)
+    cutoff, note = resolve_cutoff(my_cutoff, ids, liens)
+    diff = list_differences(ids, slim, liens, boundary, cutoff)
+    numbers = checking_numbers(slim, your_count, prediction["bucket"])
+    cutoff_note = f"<p>{html.escape(note)}</p>" if note else ""
     return (
-        "<h3 class='tc-h3'>Part 1 · Your choices</h3><p>Each card changes one of your settings from the director's version and "
-        "counts what that one choice did, at your own cutoff.</p>" + "".join(cards)
-        + "<h3 class='tc-h3'>Part 2 · Numbers worth checking</h3>" + checking_html(numbers, reference_count)
-        + f"<h3 class='tc-h3'>Part 3 · What the data was hiding</h3><ol class='tc-list'>{facts}</ol>"
+        "<h3 class='tc-h3'>Part 1 · Your list</h3><p>Your list is compared with the list that follows TriCOG's "
+        "three rules at your own cutoff. Each card counts one reason the two differ.</p>" + cutoff_note
+        + reason_cards_html(diff) + cutoff_card_html(cutoff_card(slim, liens, boundary, cutoff), cutoff)
+        + "<h3 class='tc-h3'>Part 2 · Numbers worth checking</h3>" + checking_html(numbers, diff["reference"])
+        + part_three
     )
 
 
 @app.function
-def report_html(prediction: dict, settings: dict, explain: dict, evaluation: str) -> str:
+def report_html(prediction: dict, list_summary: dict, explain: dict, evaluation: str) -> str:
     answers = "".join(f"<h3>{html.escape(q)}</h3><p>{paragraph_html(explain.get(f'r{i}', ''))}</p>"
                       for i, q in enumerate(EXPLAIN_PROMPTS, 1))
     return (
@@ -775,7 +761,7 @@ def report_html(prediction: dict, settings: dict, explain: dict, evaluation: str
         f"<style>body{{font-family:system-ui,sans-serif;max-width:760px;margin:2em auto;line-height:1.5}}{STYLE}</style>"
         "</head><body><h1>TriCOG Land Bank brief</h1>"
         f"<h2>My prediction</h2>{locked_prediction_html(prediction)}"
-        f"<h2>My list settings</h2>{settings_html(settings)}"
+        f"<h2>My list</h2><p>{list_summary['rows']:,} rows, lien cutoff ${list_summary['cutoff']:,.2f}</p>"
         f"<h2>My reflection</h2>{answers}"
         f"<h2>Evaluation</h2>{evaluation}</body></html>"
     )
@@ -966,46 +952,6 @@ def observe_cells(cell_editors, cell_outputs, cell_run_buttons, director_button,
     return
 
 
-@app.cell
-def list_controls(mo, slim):
-    _residential = sorted(slim.loc[slim["CLASSDESC"] == "RESIDENTIAL", "USEDESC"].dropna().unique())
-    boundary_control = mo.ui.radio(options={label: key for key, label in BOUNDARY_LABELS.items()}, value=None,
-                                   label="Finding parcels inside TriCOG")
-    types_control = mo.ui.multiselect(options={t.capitalize(): t for t in _residential},
-                                      label="Home types that count as single-family")
-    liens_control = mo.ui.radio(options={label: key for key, label in JOIN_LABELS.items()}, value=None,
-                                label="Joining homes to liens")
-    combine_control = mo.ui.radio(options={label: key for key, label in JOIN_LABELS.items()}, value=None,
-                                  label="Combining the boundary with the homes that have liens")
-    cutoff_control = mo.ui.slider(start=0, stop=10000, step=50, value=0, show_value=True,
-                                  label="Keep homes whose liens total more than ($)")
-    return boundary_control, combine_control, cutoff_control, liens_control, types_control
-
-
-@app.cell(hide_code=True)
-def build_your_list(boundary_control, combine_control, cutoff_control, get_final_settings, get_prediction,
-                    get_submitted, liens_control, mo, shared, slim, types_control):
-    mo.stop(get_prediction() is None)
-    _settings = get_final_settings() if get_submitted() else settings_from_controls(
-        boundary_control.value, types_control.value, liens_control.value, combine_control.value,
-        cutoff_control.value)
-    _controls = ([mo.Html(settings_html(_settings))] if get_submitted()
-                 else [boundary_control, types_control, liens_control, combine_control, cutoff_control])
-    if _settings is None:
-        _list = [mo.md("*Choose an option in each setting to see your list.*")]
-    else:
-        _tables = shared["tables"]
-        _table, _size = shown_table(build_list(slim, _tables["liens"], _tables["boundary"], _settings))
-        _list = [mo.md(f"**Your list: {_size}**"), _table]
-    mo.vstack([
-        mo.md("### Build your list\n\nThese settings turn TriCOG's three rules into a list, in this order: "
-              "boundary, home type, liens, combining, cutoff. Homes with no lien amount stay on the list at any "
-              "cutoff."),
-        *_controls, *_list,
-    ])
-    return
-
-
 @app.cell(hide_code=True)
 def observe_gate(get_prediction, mo, runs):
     mo.stop(get_prediction() is None)
@@ -1033,16 +979,13 @@ def explain_fields(mo, set_explain):
 
 
 @app.cell
-def submit_action(boundary_control, combine_control, cutoff_control, get_explain, liens_control, mo,
-                  set_final_settings, set_submitted, submit_button, types_control):
-    _settings = settings_from_controls(boundary_control.value, types_control.value, liens_control.value,
-                                       combine_control.value, cutoff_control.value)
-    _ready = can_submit(get_explain()) and _settings is not None
+def submit_action(get_explain, mo, set_final_settings, set_submitted, submit_button):
+    _ready = can_submit(get_explain())
     if submit_button.value and _ready:
-        set_final_settings(_settings)
+        set_final_settings({"my_list": None, "my_cutoff": None})
         set_submitted(True)
-    submit_warning = (mo.callout("Answer all three questions and choose every list setting before you submit.",
-                                 kind="warn") if submit_button.value and not _ready else "")
+    submit_warning = (mo.callout("Answer all three questions before you submit.", kind="warn")
+                      if submit_button.value and not _ready else "")
     return (submit_warning,)
 
 
@@ -1072,8 +1015,10 @@ def evaluate(get_explain, get_final_settings, get_prediction, get_submitted, mo,
     # One cell with the download: a separate cell would re-run (and fail) whenever the Explain answers change.
     mo.stop(not get_submitted())
     _tables = shared["tables"]
-    _evaluation = evaluation_html(slim, _tables["liens"], _tables["boundary"], get_final_settings(), get_prediction())
-    _doc = report_html(get_prediction(), get_final_settings(), get_explain(), _evaluation)
+    _final = get_final_settings()
+    _evaluation = evaluation_html(slim, _tables["liens"], _tables["boundary"], _final["my_list"], _final["my_cutoff"],
+                                  get_prediction())
+    _doc = report_html(get_prediction(), {"rows": 0, "cutoff": 0.0}, get_explain(), _evaluation)
     mo.vstack([
         mo.Html(stage_header_html(4)), mo.Html(_evaluation),
         mo.md("### Download your brief\n\nThe file holds your prediction, your list settings, your reflection and "
