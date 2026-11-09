@@ -5,3 +5,5 @@ __pycache__/
 __marimo__/
 .DS_Store
 .idea/
+# marimo's export copies its own AI-assistant prompt; the page doesn't use it
+docs/CLAUDE.md

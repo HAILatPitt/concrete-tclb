@@ -444,7 +444,7 @@ def data_tabs_view(tables: dict, rows):
         table = tables[name]
         sample = ("" if rows is None else
                   f"<p>Showing the first {rows:,} of {len(table):,} rows. Your code works on all of them.</p>")
-        browser = mo.ui.table(browse_frame(table, rows), page_size=10, selection=None)
+        browser = display_table(browse_frame(table, rows))
         # Notes under the table: beside it, they squeezed into a strip one or two words wide.
         tabs[name] = mo.Html(f"<div style='min-width:0;overflow-x:auto'><div class='tc-doc'>{sample}</div>{browser}"
                              f"<div class='tc-doc'>{column_notes_html(name)}</div></div>")
@@ -553,10 +553,32 @@ def figure_html(figure) -> str:
 
 @app.function
 def table_ready(value):
-    """marimo 0.18 can't draw a pandas 3 table whose text index has no name (without pyarrow), so name it."""
+    """marimo can't draw a pandas 3 table whose text index has no name (without pyarrow), so name it."""
     if isinstance(value, (pd.DataFrame, pd.Series)) and value.index.nlevels == 1 and value.index.name is None:
         return value.rename_axis("index")
     return value
+
+
+@app.function
+def number_text(value) -> str:
+    """A float as marimo 0.18 showed it: grouped, at most three decimals, no trailing zeros."""
+    if pd.isna(value):
+        return ""
+    return f"{value:,.3f}".rstrip("0").rstrip(".")
+
+
+@app.function
+def float_formats(frame) -> dict:
+    return {name: number_text for name in frame.columns if pd.api.types.is_float_dtype(frame[name])}
+
+
+@app.function
+def display_table(value):
+    """marimo 0.25 pads every float to its longest decimal (13,559.000000000000), so floats keep the old format."""
+    import marimo as mo
+
+    frame = value.to_frame() if isinstance(value, pd.Series) else value
+    return mo.ui.table(frame, format_mapping=float_formats(frame), page_size=10, selection=None)
 
 
 @app.function
@@ -577,7 +599,7 @@ def drawn_table(frame):
     import marimo as mo
 
     try:
-        return mo.as_html(frame)
+        return mo.as_html(display_table(frame))
     except Exception:
         return None
 
@@ -1298,7 +1320,7 @@ def observe(browse_tabs, get_prediction, get_submitted, mo, reload_button, task_
                     f"<p>The director writes: \"{html.escape(_task['director'])}\"</p>"
                     "<p class='tc-sub'>The data</p></div>"),
             mo.Html(f"<div class='tc-doc'><p>{html.escape(_preview)}</p></div>") if isinstance(_preview, str)
-            else table_ready(_preview),
+            else display_table(table_ready(_preview)),
             *([browse_tabs] if _key == "files" else []),
             mo.Html(f"<div class='tc-doc'><p class='tc-sub'>What to do</p><p>{html.escape(_task['hint'])}</p></div>"),
             mo.accordion({
@@ -1391,7 +1413,7 @@ def evaluate(get_explain, get_final, get_prediction, get_submitted, mo, slim, ta
                                   _final["my_list"], _final["my_cutoff"])
     _correct_view = [] if _correct is None else [
         mo.Html(f"<div class='tc-doc'>{correct_list_intro_html(_correct)}</div>"),
-        mo.ui.table(_correct, page_size=10, selection=None)]
+        display_table(_correct)]
     _doc = report_html(get_prediction(), list_summary(_final, tables["liens"]), get_explain(), _part1 + _part2)
     mo.vstack([
         mo.Html(stage_header_html(4)), mo.Html(f"<div class='tc-doc'>{_part1}</div>"), *_correct_view,

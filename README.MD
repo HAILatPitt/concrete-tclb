@@ -36,6 +36,7 @@ This uses [`uv`](https://docs.astral.sh/uv/).
 GitHub Pages serves the `docs/` folder on `main`. After changing the notebook, rebuild `docs/` and commit it:
 
 ```
+rm -rf docs/assets
 uv run marimo export html-wasm tricog.py -o docs --mode run --no-show-code -f
 cp -r public docs/
 touch docs/.nojekyll
